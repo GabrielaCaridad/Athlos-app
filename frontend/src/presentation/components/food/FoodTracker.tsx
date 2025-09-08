@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Plus, Utensils, X, Save, Search } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Plus, Utensils, X, Save, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { foodService} from '../../../business/services/firestoreService';
 import { verifiedFoods, VerifiedFood, searchFoodByName } from '../../../data/models/VerifiedFoods';
@@ -24,11 +24,51 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedFood, setSelectedFood] = useState<VerifiedFood | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [customFood, setCustomFood] = useState({
     name: '',
     calories: 0,
     serving: ''
   });
+
+  // Obtener la fecha actual en formato YYYY-MM-DD
+  const today = new Date().toISOString().split('T')[0];
+
+  // Cargar alimentos del día actual cuando el componente se monta o cambia el usuario
+  useEffect(() => {
+    const loadTodaysFoods = async () => {
+      if (!user) {
+        setFoods([]);
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        const todaysFoods = await foodService.getFoodsByDate(user.uid, today);
+        
+        // Convertir los datos de Firebase al formato esperado
+        const formattedFoods: FoodEntry[] = todaysFoods.map(food => ({
+          id: food.id!,
+          userId: food.userId,
+          name: food.name,
+          calories: food.calories,
+          serving: food.serving,
+          date: food.date,
+          createdAt: food.createdAt.toDate() // Convertir Timestamp a Date
+        }));
+        
+        setFoods(formattedFoods);
+      } catch (error) {
+        console.error('Error loading foods:', error);
+        setFoods([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadTodaysFoods();
+  }, [user, today]); // Se ejecuta cuando cambia el usuario o la fecha
 
   // Filtrar alimentos según búsqueda
   const filteredFoods = searchTerm 
@@ -54,7 +94,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         name: customFood.name,
         calories: customFood.calories,
         serving: customFood.serving,
-        date: new Date().toISOString().split('T')[0]
+        date: today
       };
       
       const foodId = await foodService.addFood(user.uid, foodData);
@@ -65,10 +105,23 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         createdAt: new Date()
       };
       
+      // Agregar el nuevo alimento al estado local
       setFoods([newFoodEntry, ...foods]);
       resetModal();
     } catch (error) {
       console.error('Error adding food:', error);
+    }
+  };
+
+  const handleDeleteFood = async (foodId: string) => {
+    if (!user) return;
+
+    try {
+      await foodService.deleteFood(foodId);
+      // Remover el alimento del estado local
+      setFoods(foods.filter(food => food.id !== foodId));
+    } catch (error) {
+      console.error('Error deleting food:', error);
     }
   };
 
@@ -119,35 +172,59 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
           <span>Alimentos de Hoy</span>
         </h3>
         
-        <div className="space-y-3">
-          {foods.length > 0 ? (
-            foods.map((food) => (
-              <div key={food.id} className={`flex justify-between items-center p-3 rounded-lg ${
-                isDark ? 'bg-gray-700' : 'bg-gray-50'
-              }`}>
-                <div className="flex-1">
-                  <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                    {food.name}
-                  </span>
-                  <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                    {food.serving}
+        {isLoading ? (
+          // Indicador de carga
+          <div className="text-center py-8">
+            <div className={`inline-block animate-spin rounded-full h-8 w-8 border-b-2 ${
+              isDark ? 'border-purple-400' : 'border-purple-600'
+            }`}></div>
+            <p className={`mt-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+              Cargando alimentos...
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {foods.length > 0 ? (
+              foods.map((food) => (
+                <div key={food.id} className={`flex justify-between items-center p-3 rounded-lg ${
+                  isDark ? 'bg-gray-700' : 'bg-gray-50'
+                }`}>
+                  <div className="flex-1">
+                    <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                      {food.name}
+                    </span>
+                    <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                      {food.serving}
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className={`text-sm font-semibold px-3 py-1 rounded-full ${
+                      isDark ? 'bg-gray-600 text-gray-200' : 'bg-gray-200 text-gray-700'
+                    }`}>
+                      {food.calories} kcal
+                    </span>
+                    <button
+                      onClick={() => handleDeleteFood(food.id)}
+                      className={`p-1 rounded transition-colors ${
+                        isDark
+                          ? 'text-gray-400 hover:text-red-400 hover:bg-gray-600'
+                          : 'text-gray-500 hover:text-red-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </div>
-                <span className={`text-sm font-semibold px-3 py-1 rounded-full ${
-                  isDark ? 'bg-gray-600 text-gray-200' : 'bg-gray-200 text-gray-700'
-                }`}>
-                  {food.calories} kcal
-                </span>
-              </div>
-            ))
-          ) : (
-            <p className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-              No hay alimentos registrados hoy
-            </p>
-          )}
-        </div>
+              ))
+            ) : (
+              <p className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                No hay alimentos registrados hoy
+              </p>
+            )}
+          </div>
+        )}
 
-        {foods.length > 0 && (
+        {foods.length > 0 && !isLoading && (
           <div className={`mt-4 pt-4 border-t ${isDark ? 'border-gray-600' : 'border-gray-200'}`}>
             <div className="flex justify-between items-center">
               <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
@@ -202,7 +279,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                 />
               </div>
 
-              {/* Food List */}
+              {/* Lista de comida */}
               <div>
                 <label className={`block text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
                   Selecciona un alimento:

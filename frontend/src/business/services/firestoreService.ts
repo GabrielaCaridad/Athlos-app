@@ -150,15 +150,68 @@ export const foodService = {
     }
   },
 
-  /* Obtener alimentos por fecha*/
+  /* Obtener alimentos por fecha - VERSIÓN OPTIMIZADA CON ÍNDICES */
   async getFoodsByDate(userId: string, date: string): Promise<FoodEntry[]> {
     try {
+      // Esta consulta requiere el índice compuesto que estás creando
       const q = query(
         collection(db, 'foods'),
         where('userId', '==', userId),
         where('date', '==', date),
-        orderBy('createdAt', 'desc')
+        orderBy('createdAt', 'desc') // Los más recientes primero
       );
+      
+      const querySnapshot = await getDocs(q);
+      
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as FoodEntry[];
+      
+    } catch (error) {
+      console.error('Error getting foods by date:', error);
+      
+      // Si falla (índice no listo), usar versión simplificada como fallback
+      console.log('Intentando con consulta simplificada...');
+      return await this.getFoodsByDateSimple(userId, date);
+    }
+  },
+
+  /* Versión simplificada como fallback */
+  async getFoodsByDateSimple(userId: string, date: string): Promise<FoodEntry[]> {
+    try {
+      // Solo filtrar por userId (no requiere índice)
+      const q = query(
+        collection(db, 'foods'),
+        where('userId', '==', userId)
+      );
+      
+      const querySnapshot = await getDocs(q);
+      
+      // Filtrar por fecha y ordenar en el cliente
+      const allUserFoods = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as FoodEntry[];
+      
+      return allUserFoods
+        .filter(food => food.date === date)
+        .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+        
+    } catch (error) {
+      console.error('Error getting foods by date (simple):', error);
+      throw error;
+    }
+  },
+
+  /* Obtener TODOS los alimentos del usuario (para debug) */
+  async getAllUserFoods(userId: string): Promise<FoodEntry[]> {
+    try {
+      const q = query(
+        collection(db, 'foods'),
+        where('userId', '==', userId)
+      );
+      
       const querySnapshot = await getDocs(q);
       
       return querySnapshot.docs.map(doc => ({
@@ -166,8 +219,45 @@ export const foodService = {
         ...doc.data()
       })) as FoodEntry[];
     } catch (error) {
-      console.error('Error getting foods by date:', error);
+      console.error('Error getting all user foods:', error);
       throw error;
+    }
+  },
+
+  /* Obtener alimentos de múltiples días (útil para estadísticas semanales/mensuales) */
+  async getFoodsByDateRange(userId: string, startDate: string, endDate: string): Promise<FoodEntry[]> {
+    try {
+      // Esta consulta también necesita índices, pero es más útil para analytics
+      const q = query(
+        collection(db, 'foods'),
+        where('userId', '==', userId),
+        where('date', '>=', startDate),
+        where('date', '<=', endDate),
+        orderBy('date', 'desc'),
+        orderBy('createdAt', 'desc')
+      );
+      
+      const querySnapshot = await getDocs(q);
+      
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as FoodEntry[];
+      
+    } catch (error) {
+      console.error('Error getting foods by date range:', error);
+      
+      // Fallback: obtener todos los alimentos del usuario y filtrar en cliente
+      const allFoods = await this.getAllUserFoods(userId);
+      return allFoods
+        .filter(food => food.date >= startDate && food.date <= endDate)
+        .sort((a, b) => {
+          // Primero por fecha (desc), luego por hora de creación (desc)
+          if (a.date !== b.date) {
+            return b.date.localeCompare(a.date);
+          }
+          return b.createdAt.toMillis() - a.createdAt.toMillis();
+        });
     }
   },
 
@@ -202,8 +292,44 @@ export const foodService = {
       console.error('Error getting daily calories:', error);
       throw error;
     }
+  },
+
+  /* Obtener estadísticas de la semana */
+  async getWeeklyStats(userId: string): Promise<{
+    totalCalories: number;
+    avgCalories: number;
+    daysWithFood: number;
+    totalFoods: number;
+  }> {
+    try {
+      const today = new Date();
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - 6); // Últimos 7 días
+      
+      const startDate = startOfWeek.toISOString().split('T')[0];
+      const endDate = today.toISOString().split('T')[0];
+      
+      const weekFoods = await this.getFoodsByDateRange(userId, startDate, endDate);
+      
+      const dailyTotals = new Map<string, number>();
+      weekFoods.forEach(food => {
+        const current = dailyTotals.get(food.date) || 0;
+        dailyTotals.set(food.date, current + food.calories);
+      });
+      
+      const totalCalories = Array.from(dailyTotals.values()).reduce((sum, cal) => sum + cal, 0);
+      const daysWithFood = dailyTotals.size;
+      const avgCalories = daysWithFood > 0 ? totalCalories / daysWithFood : 0;
+      
+      return {
+        totalCalories,
+        avgCalories: Math.round(avgCalories),
+        daysWithFood,
+        totalFoods: weekFoods.length
+      };
+    } catch (error) {
+      console.error('Error getting weekly stats:', error);
+      throw error;
+    }
   }
 };
-
-
-      
