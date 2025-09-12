@@ -6,7 +6,7 @@ import LoadingScreen from './presentation/components/auth/LoadingScreen';
 import UserProfile from './presentation/components/common/UserProfile'; 
 import ThemeToggle from './presentation/components/common/ThemeToggle'; 
 import FoodTracker from './presentation/components/food/FoodTracker';
-
+import WorkoutTracker from './presentation/components/workout/WorkoutTracker';
 
 type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements';
 
@@ -81,18 +81,7 @@ function App() {
         );
       
       case 'workouts':
-        // Placeholder para la sección de entrenamientos.
-        return (
-          <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center shadow-lg`}>
-              <Dumbbell size={28} className="text-white" />
-            </div>
-            <h2 className="text-2xl font-bold mb-4">Entrenamientos</h2>
-            <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-              Esta sección estará disponible próximamente
-            </p>
-          </div>
-        );
+        return <WorkoutTracker isDark={isDark} />;
       
       case 'wellness':
         // Placeholder para la sección de bienestar.

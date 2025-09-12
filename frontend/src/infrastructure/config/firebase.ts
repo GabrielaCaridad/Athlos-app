@@ -10,7 +10,7 @@ const firebaseConfig = {
   authDomain: "athlos-c7de6.firebaseapp.com", // Dominio para autenticación web
   projectId: "athlos-c7de6", // ID único del proyecto en Firebase
   storageBucket: "athlos-c7de6.firebasestorage.app", // Bucket para almacenar archivos
-  messagingSenderId: "y789060160802", // ID para notificaciones push
+  messagingSenderId: "789060160802", // ID para notificaciones push
   appId: "1:789060160802:web:1c26ad914f19ece4fd697b" // ID único de la aplicación web
 };
 
