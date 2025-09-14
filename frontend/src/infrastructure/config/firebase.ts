@@ -5,7 +5,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCn923Ga0FDTkfrR6sw4zW0rjVFplvYdfQ",
+  apiKey: import.meta.env.VITE_REACT_APP_FIREBASE_API_KEY,
   authDomain: "athlos-c7de6.firebaseapp.com",
   projectId: "athlos-c7de6",
   storageBucket: "athlos-c7de6.firebasestorage.app",
