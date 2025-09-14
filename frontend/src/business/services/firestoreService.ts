@@ -1,4 +1,4 @@
-// Importaciones de Firestore para operaciones CRUD
+// Firestore services: user profiles, foods, workouts
 import { 
   collection, // Para referenciar colecciones
   addDoc, // Para agregar documentos
@@ -13,10 +13,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../infrastructure/config/firebase';
 
-/**
- * Interfaz que define la estructura de un perfil de usuario en Firestore
- * Representa todos los datos que se guardan de cada usuario
- */
+// User profile model
 export interface UserProfile {
   id?: string; // ID del documento (opcional, se asigna automáticamente)
   userId: string; // ID del usuario de Firebase Auth (para vincular)
@@ -29,10 +26,7 @@ export interface UserProfile {
   createdAt: Timestamp; // Fecha de creación del perfil
 }
 
-/**
- * Servicio para manejar operaciones CRUD de perfiles de usuario
- * Agrupa todas las funciones relacionadas con usuarios en un objeto
- */
+// User profile CRUD
 export const userService = {
   /**
    * Crea un nuevo perfil de usuario en Firestore
@@ -43,17 +37,13 @@ export const userService = {
    */
   async createUserProfile(userId: string, profileData: Omit<UserProfile, 'id' | 'userId' | 'createdAt'>) {
     try {
-      // addDoc agrega un nuevo documento a la colección 'users'
       const docRef = await addDoc(collection(db, 'users'), {
-        ...profileData, // Esparce los datos proporcionados
-        userId, // Agrega el ID del usuario de Auth
-        createdAt: Timestamp.now() // Agrega timestamp actual
+        ...profileData,
+        userId,
+        createdAt: Timestamp.now()
       });
-      
-      // Retorna el ID del documento recién creado
       return docRef.id;
     } catch (error) {
-      // Manejo de errores: logea y re-lanza para que el componente pueda manejar
       console.error('Error creating user profile:', error);
       throw error;
     }
@@ -67,17 +57,12 @@ export const userService = {
    */
   async updateUserProfile(userId: string, updates: Partial<UserProfile>) {
     try {
-      // Crea una consulta para encontrar el documento del usuario
-      // where('userId', '==', userId) busca documentos donde el campo userId coincida
       const q = query(collection(db, 'users'), where('userId', '==', userId));
       const querySnapshot = await getDocs(q);
-      
-      // Si encuentra el documento del usuario
       if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0]; // Toma el primer (y debería ser único) resultado
-        await updateDoc(userDoc.ref, updates); // Actualiza con los nuevos datos
+        const userDoc = querySnapshot.docs[0];
+        await updateDoc(userDoc.ref, updates);
       }
-      // Nota: Si no encuentra el documento, no hace nada (podría lanzar error)
     } catch (error) {
       console.error('Error updating user profile:', error);
       throw error;
@@ -92,22 +77,15 @@ export const userService = {
    */
   async getUserProfile(userId: string) {
     try {
-      // Busca el documento del usuario usando su ID de Auth
       const q = query(collection(db, 'users'), where('userId', '==', userId));
       const querySnapshot = await getDocs(q);
-      
-      // Si encuentra el documento
       if (!querySnapshot.empty) {
         const userDoc = querySnapshot.docs[0];
-        
-        // Combina el ID del documento con los datos y los tipea correctamente
         return {
           id: userDoc.id,
           ...userDoc.data()
         } as UserProfile;
       }
-      
-      // Si no encuentra el usuario, retorna null
       return null;
     } catch (error) {
       console.error('Error getting user profile:', error);
@@ -205,7 +183,7 @@ export const foodService = {
   }
 };
 
-// NUEVAS INTERFACES Y SERVICIO PARA WORKOUTS
+// Workouts
 
 export interface Exercise {
   id: string;
@@ -216,6 +194,9 @@ export interface Exercise {
   completed: boolean;
   restTime?: number; // tiempo de descanso en segundos
   notes?: string;
+  setsDetail?: { reps: number; weight: number; done?: boolean }[];
+  caloriesBurned?: number;
+  totalWeightLifted?: number;
 }
 
 export interface WorkoutSession {
@@ -224,11 +205,13 @@ export interface WorkoutSession {
   name: string;
   duration: number; // en segundos
   isActive: boolean;
-  energyLevel?: number; // 1-10 escala subjetiva
+  preEnergyLevel?: number; // 1-10 energía antes
+  postEnergyLevel?: number; // 1-10 energía después
   exercises: Exercise[];
   createdAt: Timestamp;
   completedAt?: Timestamp;
   totalCaloriesBurned?: number;
+  totalWeightLifted?: number;
 }
 
 export const workoutService = {
@@ -275,14 +258,27 @@ export const workoutService = {
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
-      
-      return querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as WorkoutSession[];
-    } catch (error) {
-      console.error('Error getting workouts by date:', error);
-      throw error;
+      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as WorkoutSession[];
+    } catch (err: unknown) {
+      const msg = (err as { message?: string; code?: string })?.message || '';
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Fallback sin orderBy y con filtros mínimos para evitar índice compuesto
+        const q2 = query(
+          collection(db, 'workouts'),
+          where('userId', '==', userId)
+        );
+        const qs2 = await getDocs(q2);
+        const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as WorkoutSession[];
+        const start = new Date(date + 'T00:00:00.000Z');
+        const end = new Date(date + 'T23:59:59.999Z');
+        return all.filter(w => {
+          const created = w.createdAt?.toDate?.() as Date | undefined;
+          return created && created >= start && created <= end;
+        }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      }
+      console.error('Error getting workouts by date:', err);
+      throw err;
     }
   },
 
@@ -297,14 +293,22 @@ export const workoutService = {
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
-      
-      return querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as WorkoutSession[];
-    } catch (error) {
-      console.error('Error getting user workouts:', error);
-      throw error;
+      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as WorkoutSession[];
+    } catch (err: unknown) {
+      const msg = (err as { message?: string; code?: string })?.message || '';
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Fallback sin orderBy mientras creamos el índice
+        const q2 = query(
+          collection(db, 'workouts'),
+          where('userId', '==', userId)
+        );
+        const qs2 = await getDocs(q2);
+        const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as WorkoutSession[];
+        return all.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      }
+      console.error('Error getting user workouts:', err);
+      throw err;
     }
   },
 
@@ -333,28 +337,101 @@ export const workoutService = {
     try {
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
-      
       const q = query(
         collection(db, 'workouts'),
         where('userId', '==', userId),
-        where('createdAt', '>=', Timestamp.fromDate(weekAgo)),
-        where('isActive', '==', false) // Solo entrenamientos completados
+        where('completedAt', '>=', Timestamp.fromDate(weekAgo)),
+        where('isActive', '==', false)
       );
-      
       const querySnapshot = await getDocs(q);
       const workouts = querySnapshot.docs.map(doc => doc.data()) as WorkoutSession[];
-      
       return {
         totalDuration: workouts.reduce((sum, w) => sum + w.duration, 0),
         totalWorkouts: workouts.length,
-        avgEnergyLevel: workouts.length > 0 
-          ? workouts.reduce((sum, w) => sum + (w.energyLevel || 0), 0) / workouts.length 
-          : 0,
+        avgEnergyLevel: workouts.length > 0 ? workouts.reduce((sum, w) => sum + (w.postEnergyLevel ?? w.preEnergyLevel ?? 0), 0) / workouts.length : 0,
         totalCalories: workouts.reduce((sum, w) => sum + (w.totalCaloriesBurned || 0), 0)
       };
-    } catch (error) {
-      console.error('Error getting weekly stats:', error);
-      throw error;
+    } catch (err: unknown) {
+      const msg = (err as { message?: string; code?: string })?.message || '';
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Fallback: trae por userId y filtra en cliente
+        const q2 = query(collection(db, 'workouts'), where('userId', '==', userId));
+        const qs2 = await getDocs(q2);
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const all = qs2.docs.map(d => d.data()) as WorkoutSession[];
+        const workouts = all.filter(w => !w.isActive && w.completedAt && (w.completedAt as Timestamp).toDate() >= weekAgo);
+        return {
+          totalDuration: workouts.reduce((sum, w) => sum + w.duration, 0),
+          totalWorkouts: workouts.length,
+          avgEnergyLevel: workouts.length > 0 ? workouts.reduce((sum, w) => sum + (w.postEnergyLevel ?? w.preEnergyLevel ?? 0), 0) / workouts.length : 0,
+          totalCalories: workouts.reduce((sum, w) => sum + (w.totalCaloriesBurned || 0), 0)
+        };
+      }
+      console.error('Error getting weekly stats:', err);
+      throw err;
     }
+  }
+};
+
+// Plantillas de entrenamiento del usuario
+export interface TemplateExercise {
+  id?: string;
+  name: string;
+  sets: number;
+  reps: number;
+  restTime?: number;
+  weightKg?: number;
+}
+
+export interface WorkoutTemplate {
+  id?: string;
+  userId: string;
+  name: string;
+  exercises: TemplateExercise[];
+  createdAt: Timestamp;
+}
+
+export const workoutTemplateService = {
+  async createTemplate(userId: string, data: Omit<WorkoutTemplate, 'id' | 'userId' | 'createdAt'>) {
+    const docRef = await addDoc(collection(db, 'workout_templates'), {
+      ...data,
+      userId,
+      createdAt: Timestamp.now()
+    });
+    return docRef.id;
+  },
+  async getUserTemplates(userId: string): Promise<WorkoutTemplate[]> {
+    try {
+      const q = query(
+        collection(db, 'workout_templates'),
+        where('userId', '==', userId),
+        orderBy('createdAt', 'desc')
+      );
+      const qs = await getDocs(q);
+      return qs.docs.map(d => ({ id: d.id, ...d.data() } as WorkoutTemplate));
+    } catch (err: unknown) {
+      const msg = (err as { message?: string; code?: string })?.message || '';
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Fallback sin orderBy mientras se crea el índice compuesto en Firestore
+        const q2 = query(
+          collection(db, 'workout_templates'),
+          where('userId', '==', userId)
+        );
+        const qs2 = await getDocs(q2);
+        return qs2.docs.map(d => ({ id: d.id, ...d.data() } as WorkoutTemplate));
+      }
+      throw err;
+    }
+  },
+  async updateTemplate(id: string, updates: Partial<Omit<WorkoutTemplate, 'id' | 'userId' | 'createdAt'>>) {
+    const ref = doc(db, 'workout_templates', id);
+    await updateDoc(ref, updates);
+  },
+  async deleteTemplate(id: string) {
+    const ref = doc(db, 'workout_templates', id);
+    await deleteDoc(ref);
   }
 };

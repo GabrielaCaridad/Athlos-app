@@ -1,3 +1,5 @@
+// FoodTracker: registra alimentos, totales diarios y estadísticas semanales.
+// Secciones: estados (usuario/búsqueda/formulario/estadísticas), efectos de carga, handlers y UI.
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Utensils, X, Save, Search, Trash2, Clock, TrendingUp, Target, Calendar } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';

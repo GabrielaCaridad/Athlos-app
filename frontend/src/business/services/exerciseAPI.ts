@@ -1,4 +1,5 @@
-
+// exerciseAPI: integración con ExerciseDB (RapidAPI) y adaptación a formato interno.
+// Incluye caché sencillo, manejo de errores y utilidades de mapeo/dificultad.
 // Configuración de la API
 const RAPIDAPI_KEY = import.meta.env.VITE_RAPIDAPI_KEY as string | undefined;
 const RAPIDAPI_HOST = 'exercisedb.p.rapidapi.com';
@@ -462,7 +463,7 @@ export const exerciseAPIService = {
     }
   }
 };
-
+/** 
 // Función de utilidad para verificar si la API está configurada correctamente
 export const checkAPIConfiguration = (): boolean => {
   if (!RAPIDAPI_KEY) {
@@ -482,7 +483,7 @@ export const testAPIConnection = async (): Promise<boolean> => {
     return false;
   }
 };
-
+*/
 // Constantes útiles para la UI
 export const BODY_PARTS_SPANISH: { [key: string]: string } = {
   'back': 'Espalda',

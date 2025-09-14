@@ -1,4 +1,8 @@
-import React, { useState } from 'react'; 
+// App: contenedor principal de la interfaz.
+// - Muestra login o la aplicación según autenticación.
+// - Gestiona navegación entre Alimentación y Entrenamientos.
+// - Aplica tema claro/oscuro.
+import { useState } from 'react';
 import { Home, Utensils, Dumbbell, Trophy, Menu, X } from 'lucide-react';
 import { useAuth } from './presentation/hooks/useAuth';
 import AuthForm from './presentation/components/auth/AuthForm';       
@@ -11,30 +15,16 @@ import WorkoutTracker from './presentation/components/workout/WorkoutTracker';
 type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements';
 
 function App() {
-  // useAuth es un hook personalizado que controla la autenticación.
-  // Devuelve el usuario (user), si está cargando (loading) y si está autenticado (isAuthenticated).
   const { user, loading, isAuthenticated } = useAuth();
-
-  // Estado local para saber qué pestaña está activa (dashboard por defecto).
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-
-  // Estado para modo oscuro/clare (true = oscuro).
   const [isDark, setIsDark] = useState(false);
-
-  // Estado para controlar si el menú lateral en mobile está abierto.
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-  // Si todavía estamos comprobando la autenticación, mostramos pantalla de carga.
   if (loading) {
     return <LoadingScreen isDark={isDark} />;
   }
-
-  // Si no está autenticado, mostramos el formulario de login y no renderizamos la app.
   if (!isAuthenticated) {
     return <AuthForm isDark={isDark} onAuthSuccess={() => {}} />;
   }
-
-  // Lista de navegación para el sidebar. Cada entrada tiene un id (coincide con ActiveTab), un nombre y un icono.
   const navigation = [
     { id: 'dashboard', name: 'Dashboard', icon: Home },
     { id: 'food', name: 'Alimentación', icon: Utensils },
@@ -43,18 +33,14 @@ function App() {
     { id: 'achievements', name: 'Logros', icon: Trophy },
   ];
 
-  // Función que renderiza el contenido principal según la pestaña activa.
   const renderContent = () => {
     switch (activeTab) {
       case 'food':
-        // Muestra el componente encargado del seguimiento de alimentación.
         return <FoodTracker isDark={isDark} />;
       
       case 'dashboard':
-        // Vista principal / bienvenida con información básica del usuario.
         return (
           <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            {/* Contenedor con icono grande */}
             <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg`}>
               <Home size={28} className="text-white" />
             </div>
@@ -64,8 +50,6 @@ function App() {
             <p className={`text-lg mb-6 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
               Tu centro de control para una vida saludable
             </p>
-
-            {/* Tarjeta con información del usuario */}
             <div className={`max-w-md mx-auto p-6 rounded-2xl ${
               isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
             }`}>
@@ -84,7 +68,6 @@ function App() {
         return <WorkoutTracker isDark={isDark} />;
       
       case 'wellness':
-        // Placeholder para la sección de bienestar.
         return (
           <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
             <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center shadow-lg`}>
@@ -98,7 +81,6 @@ function App() {
         );
       
       case 'achievements':
-        // Placeholder para logros.
         return (
           <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
             <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center shadow-lg`}>
@@ -112,7 +94,6 @@ function App() {
         );
       
       default:
-        // Mensaje por si `activeTab` no coincide con ninguno (defensa).
         return (
           <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
             <h2 className="text-2xl font-bold mb-4">Página no encontrada</h2>
@@ -125,12 +106,10 @@ function App() {
   };
 
   return (
-    // Contenedor principal que cambia el fondo según `isDark`.
     <div className={`min-h-screen transition-all duration-500 ${
       isDark ? 'bg-gray-900' : 'bg-gray-50'
     }`}>
       <div className="flex h-screen overflow-hidden">
-        {/* Overlay que aparece cuando el menú móvil está abierto. */}
         {isMobileMenuOpen && (
           <div 
             className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
@@ -138,14 +117,12 @@ function App() {
           />
         )}
 
-        {/* Sidebar */}
         <div className={`${
           isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
         } lg:translate-x-0 fixed lg:static inset-y-0 left-0 z-50 w-64 transition-all duration-300 ${
           isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
         }`}>
           <div className="flex flex-col h-full">
-            {/* Logo y botón de cerrar en mobile */}
             <div className="flex items-center justify-between p-6 border-b border-opacity-20">
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg">
@@ -164,13 +141,11 @@ function App() {
               </button>
             </div>
 
-            {/* Navegación: mapeamos el array `navigation` para generar botones */}
             <nav className="flex-1 p-4 space-y-2">
               {navigation.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => {
-                    // Cambiamos la pestaña activa y cerramos el menú móvil si corresponde.
                     setActiveTab(item.id as ActiveTab);
                     setIsMobileMenuOpen(false);
                   }}
@@ -183,17 +158,14 @@ function App() {
                       ? 'text-gray-300 hover:bg-gray-700 hover:text-white'
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
                   }`}>
-                  {/* Cada item tiene un icono dinámico */}
                   <item.icon size={20} />
                   <span className="font-medium">{item.name}</span>
                 </button>
               ))}
             </nav>
 
-            {/* Perfil de usuario (componente separado) */}
             <UserProfile isDark={isDark} />
 
-            {/* Toggle de tema */}
             <div className={`p-4 border-t border-opacity-20 ${
               isDark ? 'border-gray-700' : 'border-gray-200'
             }`}>

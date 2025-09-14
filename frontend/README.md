@@ -1,69 +1,42 @@
-# React + TypeScript + Vite
+# Athlos — Frontend (React + TypeScript + Vite)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicación frontend para seguimiento de entrenamientos y alimentación. Usa Firebase (Auth/Firestore/Storage) y la API de ExerciseDB (RapidAPI) para sugerir ejercicios.
 
-Currently, two official plugins are available:
+## Requisitos
+- Node.js 18+
+- Cuenta y proyecto de Firebase (ya configurado en `src/infrastructure/config/firebase.ts`).
+- Clave de RapidAPI para ExerciseDB.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Configuración de entorno
+Crea el archivo `.env` en `frontend/` con:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+VITE_RAPIDAPI_KEY=tu_clave_de_rapidapi
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Scripts
+- `npm install`: instala dependencias
+- `npm run dev`: arranca el entorno de desarrollo
+- `npm run build`: build de producción
+- `npm run preview`: sirve el build localmente
+- `npm run lint`: ejecuta ESLint
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Ejecutar en desarrollo
+```powershell
+npm install ; npm run dev
 ```
+Abre el enlace que muestra Vite (por defecto http://localhost:5173).
+
+## Estructura principal
+- `src/App.tsx`: contenedor principal, navegación y gating por autenticación.
+- `src/presentation/components/workout/WorkoutTracker.tsx`: flujo completo de entrenamientos (buscar ejercicios, agregar manualmente, editar series/reps/descanso, crear e iniciar, historial).
+- `src/presentation/components/food/FoodTracker.tsx`: registro de comidas y totales diarios/semanales.
+- `src/business/services/`: servicios de Firestore (`firestoreService.ts`), ExerciseDB (`exerciseAPI.ts`) y base de datos de alimentos (`foodDataService.ts`).
+- `src/infrastructure/config/firebase.ts`: inicialización de Firebase.
+- `src/presentation/hooks/useAuth.ts`: estado de autenticación.
+
+Documentación de módulos y archivos: ver `DOCS.md`.
+
+## Notas
+- Sin iniciar sesión, puedes crear sesiones locales de entrenamiento (modo invitado).
+- Si la API de ejercicios no responde, la app usa una lista por defecto para no bloquear el flujo.

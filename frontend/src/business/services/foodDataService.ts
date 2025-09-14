@@ -1,5 +1,6 @@
-// src/business/services/foodDatabaseService.ts
-
+// foodDataService: servicios de alimentos.
+// - foodDatabaseService: base de datos de alimentos de la app (búsqueda, alta, uso, inicialización).
+// - userFoodService: entradas de alimentos por usuario (CRUD y estadísticas).
 import { 
   collection, 
   addDoc, 

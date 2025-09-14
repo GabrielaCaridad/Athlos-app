@@ -1,3 +1,4 @@
+// VerifiedFoods: lista curada inicial para poblar la base de datos de alimentos.
 /*Datos nutricionales sacados de USDA foodData central 2024*/
 export interface VerifiedFood {
     id: string;
