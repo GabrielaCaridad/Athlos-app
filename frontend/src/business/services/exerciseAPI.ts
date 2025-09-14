@@ -214,7 +214,7 @@ const adaptExercise = (exercise: ExerciseDBExercise): AdaptedExercise => {
 // Función para realizar peticiones HTTP con manejo de errores mejorado
 const makeRequest = async (url: string): Promise<unknown> => {
   if (!RAPIDAPI_KEY) {
-    throw new Error('Falta VITE_RAPIDAPI_KEY. Añade tu clave en frontend/.env');
+    throw new Error('');
   }
   console.log('Making request to:', url);
   
@@ -244,7 +244,7 @@ const makeRequest = async (url: string): Promise<unknown> => {
   return data;
 };
 
-// Servicio principal de ExerciseDB API - CORREGIDO
+
 export const exerciseAPIService = {
   /**
    * Obtener todos los ejercicios
@@ -467,7 +467,7 @@ export const exerciseAPIService = {
 // Función de utilidad para verificar si la API está configurada correctamente
 export const checkAPIConfiguration = (): boolean => {
   if (!RAPIDAPI_KEY) {
-    console.error('RAPIDAPI_KEY no está configurada. Agrega VITE_RAPIDAPI_KEY=tu_clave en el archivo .env');
+    console.error('RAPIDAPI_KEY no está configurada.');
     return false;
   }
   return true;

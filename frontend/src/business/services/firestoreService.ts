@@ -395,25 +395,48 @@ export interface WorkoutTemplate {
 
 export const workoutTemplateService = {
   async createTemplate(userId: string, data: Omit<WorkoutTemplate, 'id' | 'userId' | 'createdAt'>) {
-    const docRef = await addDoc(collection(db, 'workout_templates'), {
-      ...data,
-      userId,
-      createdAt: Timestamp.now()
-    });
-    return docRef.id;
+    try {
+      console.debug('[workoutTemplateService] createTemplate called', { userId, data });
+      
+      const cleanedExercises: TemplateExercise[] = (data.exercises || []).map(ex => {
+        const e: TemplateExercise = {
+          name: ex.name,
+          sets: ex.sets,
+          reps: ex.reps
+        };
+        if (typeof ex.restTime !== 'undefined') e.restTime = ex.restTime;
+        if (typeof ex.weightKg === 'number') e.weightKg = ex.weightKg;
+        return e;
+      });
+      const cleanData: Omit<WorkoutTemplate, 'id' | 'userId' | 'createdAt'> & { userId: string; createdAt: Timestamp } = {
+        name: data.name,
+        exercises: cleanedExercises,
+        userId,
+        createdAt: Timestamp.now()
+      };
+      const docRef = await addDoc(collection(db, 'workout_templates'), cleanData);
+      console.debug('[workoutTemplateService] template created', { id: docRef.id });
+      return docRef.id;
+    } catch (error) {
+      console.error('[workoutTemplateService] createTemplate error', error, { userId, data });
+      throw error;
+    }
   },
   async getUserTemplates(userId: string): Promise<WorkoutTemplate[]> {
     try {
+      console.debug('[workoutTemplateService] getUserTemplates called', { userId });
       const q = query(
         collection(db, 'workout_templates'),
         where('userId', '==', userId),
         orderBy('createdAt', 'desc')
       );
       const qs = await getDocs(q);
+      console.debug('[workoutTemplateService] getUserTemplates result count', qs.docs.length);
       return qs.docs.map(d => ({ id: d.id, ...d.data() } as WorkoutTemplate));
     } catch (err: unknown) {
       const msg = (err as { message?: string; code?: string })?.message || '';
       const code = (err as { code?: string })?.code || '';
+      console.warn('[workoutTemplateService] getUserTemplates fallback triggered', { code, msg });
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
         // Fallback sin orderBy mientras se crea el índice compuesto en Firestore
         const q2 = query(
@@ -421,8 +444,10 @@ export const workoutTemplateService = {
           where('userId', '==', userId)
         );
         const qs2 = await getDocs(q2);
+        console.debug('[workoutTemplateService] getUserTemplates fallback result count', qs2.docs.length);
         return qs2.docs.map(d => ({ id: d.id, ...d.data() } as WorkoutTemplate));
       }
+      console.error('[workoutTemplateService] getUserTemplates error', err);
       throw err;
     }
   },

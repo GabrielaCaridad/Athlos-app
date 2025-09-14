@@ -286,8 +286,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const pauseWorkout = () => setIsRunning(false);
   const resumeWorkout = () => setIsRunning(true);
 
-  // Botón de completar ejercicio a nivel de título eliminado según nueva UI
-
+  
   const stopWorkout = async () => {
     if (!activeWorkout || !user) return;
     if (!showFinalizeConfirm) { setShowFinalizeConfirm(true); return; }
@@ -438,7 +437,15 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
               <div key={tpl.id} className={`p-4 rounded-xl flex flex-col justify-between ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
                 <div>
                   <div className={`font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{tpl.name}</div>
-                  <div className={`${isDark ? 'text-gray-400' : 'text-gray-600'} text-sm`}>{tpl.exercises.length} ejercicios</div>
+                  <div className={`${isDark ? 'text-gray-400' : 'text-gray-600'} text-sm`}> {
+                    tpl.exercises && tpl.exercises.length > 0 ? (
+                      <ul className="list-disc list-inside max-h-20 overflow-y-auto">
+                        {tpl.exercises.map((ex, i) => (
+                          <li key={i} className="py-0.5">{ex.name}</li>
+                        ))}
+                      </ul>
+                    ) : 'Sin ejercicios'
+                  }</div>
                 </div>
                 <div className="flex gap-2 mt-3">
                   <button onClick={() => applyTemplate(tpl)} className={`${isDark ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-purple-500 hover:bg-purple-600 text-white'} flex-1 py-2 rounded-lg text-sm`}>Usar</button>
@@ -708,7 +715,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                 </div>
               </div>
 
-              {/* Bloque de ejercicios seleccionados eliminado: configuración se hará en el editor por serie al iniciar */}
+              {}
 
               {/* Acciones del modal */}
               <div className="flex flex-col md:flex-row gap-3 pt-4">
@@ -725,13 +732,15 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                     } else {
                       try {
                         const name = (customWorkoutName.trim() || 'Plantilla sin título');
-                        await workoutTemplateService.createTemplate(user.uid, {
+                        const payload = {
                           name,
                           exercises: selectedExercises.map(se => ({
                             name: se.name, sets: se.defaultSets, reps: se.defaultReps, restTime: se.restTimeSeconds,
                             weightKg: (se as WeightedExercise).defaultWeightKg
                           }))
-                        });
+                        };
+                        console.debug('[WorkoutTracker] creating template', { userId: user.uid, payload });
+                        await workoutTemplateService.createTemplate(user.uid, payload);
                         setTemplateNotice('Plantilla guardada');
                         setTimeout(() => setTemplateNotice(null), 1500);
                         await refreshTemplates();
@@ -854,7 +863,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                         </div>
                       </div>
                     )}
-                    {/* Estado oculto por solicitud */}
+                    {}
                   </div>
                 ))
               ) : (
@@ -865,18 +874,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                 </div>
               )}
             </div>
-            {/* Resumen periodo */}
-            {filteredHistory.length > 0 && !isLoadingHistory && (
-              <div className={`mt-6 p-4 rounded-lg ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                <h4 className={`text-md font-semibold mb-3 ${isDark ? 'text-white' : 'text-gray-800'}`}>Resumen del Período</h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="text-center"><div className={`text-2xl font-bold ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{filteredHistory.length}</div><div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Entrenamientos</div></div>
-                  <div className="text-center"><div className={`text-2xl font-bold ${isDark ? 'text-green-400' : 'text-green-600'}`}>{formatDuration(filteredHistory.reduce((s, w) => s + w.duration, 0))}</div><div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Tiempo Total</div></div>
-                  <div className="text-center"><div className={`text-2xl font-bold ${isDark ? 'text-orange-400' : 'text-orange-600'}`}>{Math.round(filteredHistory.reduce((s, w) => s + (w.totalCaloriesBurned || 0), 0))}</div><div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Calorías</div></div>
-                  <div className="text-center"><div className={`text-2xl font-bold ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>{Math.round((filteredHistory.reduce((sum, w) => { const c = w.exercises.filter(e => e.completed).length; const t = w.exercises.length; return sum + (t > 0 ? (c / t) * 100 : 0); }, 0) / Math.max(1, filteredHistory.length)))}%</div><div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Completado</div></div>
-                </div>
-              </div>
-            )}
+            {}
           </div>
         </div>
       )}
