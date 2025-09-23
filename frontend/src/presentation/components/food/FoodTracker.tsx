@@ -97,7 +97,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   }, [user, selectedDate, today, weekAgo]);
 
   // Buscar alimentos en la base de datos
-  // import { useCallback } from 'react'; // Moved to top
+  
 
   const handleSearchDatabaseFoods = useCallback(async (searchValue?: string) => {
     const term = searchValue || searchTerm;
@@ -169,11 +169,11 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
       };
       
       const entryId = await userFoodService.addUserFoodEntry(
-        user.uid,
-        foodData,
-        selectedDate,
-        quantity,
-        selectedMealType
+      user.uid,
+      foodData,
+      selectedDate,
+      quantity,
+      selectedMealType  
       );
 
       // Agregar al estado local
@@ -216,13 +216,13 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   };
 
   const resetModal = () => {
-    setIsModalOpen(false);
-    setSelectedDatabaseFood(null);
-    setSearchTerm('');
-    setQuantity(1);
-    setSelectedMealType('breakfast');
-    setCustomFood({ name: '', calories: 0, serving: '', category: 'other' });
-  };
+  setIsModalOpen(false);
+  setSelectedDatabaseFood(null);
+  setSearchTerm('');
+  setQuantity(1);
+  setSelectedMealType('breakfast'); 
+  setCustomFood({ name: '', calories: 0, serving: '', category: 'other' });
+};
 
   const getMealTypeLabel = (mealType: MealType) => {
     const labels = {
@@ -235,12 +235,12 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   };
 
   const getFoodsByMealType = (mealType: MealType) => {
-    return userFoods.filter(food => food.mealType === mealType);
-  };
+  return userFoods.filter(food => food.mealType === mealType);
+};
 
-  const getCaloriesByMealType = (mealType: MealType) => {
-    return getFoodsByMealType(mealType).reduce((sum, food) => sum + food.calories, 0);
-  };
+const getCaloriesByMealType = (mealType: MealType) => {
+  return getFoodsByMealType(mealType).reduce((sum, food) => sum + food.calories, 0);
+};
 
   return (
     <div className="space-y-6">

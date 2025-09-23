@@ -3,7 +3,8 @@
 // - Gestiona navegación entre Alimentación y Entrenamientos.
 // - Aplica tema claro/oscuro.
 import { useState } from 'react';
-import { Home, Utensils, Dumbbell, Trophy, Menu, X } from 'lucide-react';
+import { Home, Utensils, Dumbbell, Trophy, Menu, X, TrendingUp } from 'lucide-react';
+import CorrelationsDashboard from './presentation/components/correlaciones/CorrelationsDashboard';
 import { useAuth } from './presentation/hooks/useAuth';
 import AuthForm from './presentation/components/auth/AuthForm';       
 import LoadingScreen from './presentation/components/auth/LoadingScreen';
@@ -11,8 +12,9 @@ import UserProfile from './presentation/components/common/UserProfile';
 import ThemeToggle from './presentation/components/common/ThemeToggle'; 
 import FoodTracker from './presentation/components/food/FoodTracker';
 import WorkoutTracker from './presentation/components/workout/WorkoutTracker';
+import ChatBot from './presentation/components/ChatBot/ChatBot';
 
-type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements';
+type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements' | 'correlations';
 
 function App() {
   const { user, loading, isAuthenticated } = useAuth();
@@ -27,9 +29,9 @@ function App() {
   }
   const navigation = [
     { id: 'dashboard', name: 'Dashboard', icon: Home },
+    { id: 'correlations', name: 'Correlaciones', icon: TrendingUp },
     { id: 'food', name: 'Alimentación', icon: Utensils },
     { id: 'workouts', name: 'Entrenamientos', icon: Dumbbell },
-    { id: 'wellness', name: 'Bienestar', icon: Trophy },
     { id: 'achievements', name: 'Logros', icon: Trophy },
   ];
 
@@ -66,19 +68,9 @@ function App() {
       
       case 'workouts':
         return <WorkoutTracker isDark={isDark} />;
-      
-      case 'wellness':
-        return (
-          <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center shadow-lg`}>
-              <Trophy size={28} className="text-white" />
-            </div>
-            <h2 className="text-2xl font-bold mb-4">Bienestar</h2>
-            <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-              Esta sección estará disponible próximamente
-            </p>
-          </div>
-        );
+
+      case 'correlations':
+        return <CorrelationsDashboard isDark={isDark} />;
       
       case 'achievements':
         return (
@@ -210,6 +202,7 @@ function App() {
               {renderContent()}
             </div>
           </main>
+          <ChatBot isDark={isDark} />
         </div>
       </div>
     </div>

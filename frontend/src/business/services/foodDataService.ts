@@ -237,16 +237,16 @@ export const userFoodService = {
       const databaseFoodId = await foodDatabaseService.addToDatabase(foodData, userId);
       
       const userFoodEntry: Omit<UserFoodEntry, 'id'> = {
-        userId,
-        databaseFoodId,
-        name: foodData.name,
-        calories: foodData.calories * quantity,
-        serving: foodData.serving,
-        quantity,
-        date,
-        mealType,
-        createdAt: Timestamp.now()
-      };
+      userId,
+      databaseFoodId,
+      name: foodData.name,
+      calories: foodData.calories * quantity,
+      serving: foodData.serving,
+      quantity,
+      date,
+      mealType, // ← Verificar que esto se guarde
+      createdAt: Timestamp.now()
+    };
 
       const docRef = await addDoc(collection(db, 'userFoodEntries'), userFoodEntry);
       return docRef.id;
@@ -268,13 +268,22 @@ export const userFoodService = {
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
-      
-      return querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as UserFoodEntry[];
-    } catch (error) {
+      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as UserFoodEntry[];
+    } catch (error: unknown) {
+      const msg = (error as { message?: string; code?: string })?.message || '';
+      const code = (error as { code?: string })?.code || '';
       console.error('Error getting user foods by date:', error);
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        console.warn('getUserFoodsByDate: composite index required, falling back to client-side filter');
+        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+        const qs2 = await getDocs(q2);
+        const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
+        return all.filter(f => f.date === date).sort((a, b) => {
+          const ta = (a.createdAt as Timestamp)?.toMillis?.() || 0;
+          const tb = (b.createdAt as Timestamp)?.toMillis?.() || 0;
+          return tb - ta;
+        });
+      }
       throw error;
     }
   },
@@ -296,13 +305,22 @@ export const userFoodService = {
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
-      
-      return querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as UserFoodEntry[];
-    } catch (error) {
+      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as UserFoodEntry[];
+    } catch (error: unknown) {
+      const msg = (error as { message?: string; code?: string })?.message || '';
+      const code = (error as { code?: string })?.code || '';
       console.error('Error getting user foods by meal type:', error);
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        console.warn('getUserFoodsByMealType: composite index required, falling back to client-side filter');
+        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+        const qs2 = await getDocs(q2);
+        const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
+        return all.filter(f => f.date === date && f.mealType === mealType).sort((a, b) => {
+          const ta = (a.createdAt as Timestamp)?.toMillis?.() || 0;
+          const tb = (b.createdAt as Timestamp)?.toMillis?.() || 0;
+          return tb - ta;
+        });
+      }
       throw error;
     }
   },
@@ -387,8 +405,39 @@ export const userFoodService = {
         averageDaily: Math.round(totalCalories / days),
         topFoods
       };
-    } catch (error) {
+    } catch (error: unknown) {
+      const msg = (error as { message?: string; code?: string })?.message || '';
+      const code = (error as { code?: string })?.code || '';
       console.error('Error getting nutrition stats:', error);
+      if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        console.warn('getNutritionStats: composite index required, falling back to client-side filter');
+        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+        const qs2 = await getDocs(q2);
+        const all = qs2.docs.map(d => d.data()) as UserFoodEntry[];
+        const entries = all.filter(e => e.date >= startDate && e.date <= endDate).sort((a, b) => (b.date > a.date ? 1 : -1));
+
+        const totalCalories = entries.reduce((sum, entry) => sum + entry.calories, 0);
+        const days = Math.max(1, Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1);
+        const foodCounts = entries.reduce((acc, entry) => {
+          if (!acc[entry.name]) {
+            acc[entry.name] = { count: 0, calories: 0 };
+          }
+          acc[entry.name].count += 1;
+          acc[entry.name].calories += entry.calories;
+          return acc;
+        }, {} as { [key: string]: { count: number; calories: number } });
+
+        const topFoods = Object.entries(foodCounts)
+          .map(([name, data]) => ({ name, ...data }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+
+        return {
+          totalCalories,
+          averageDaily: Math.round(totalCalories / days),
+          topFoods
+        };
+      }
       throw error;
     }
   }

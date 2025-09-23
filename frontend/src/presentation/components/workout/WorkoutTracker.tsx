@@ -13,6 +13,53 @@ interface WorkoutTrackerProps {
   isDark: boolean;
 }
 
+// Componente para selector de energía 
+interface EnergyLevelSelectorProps {
+  value: number;
+  onChange: (value: number) => void;
+  label: string;
+  isDark: boolean;
+}
+
+const EnergyLevelSelector = ({ value, onChange, label, isDark }: EnergyLevelSelectorProps) => {
+  const getEnergyColor = (level: number, isSelected: boolean) => {
+    if (!isSelected) {
+      return isDark ? 'bg-gray-700 text-gray-400 border-gray-600' : 'bg-gray-100 text-gray-500 border-gray-300';
+    }
+    
+    if (level <= 3) return 'bg-red-500 text-white border-red-500';
+    if (level <= 5) return 'bg-orange-500 text-white border-orange-500';
+    if (level <= 7) return 'bg-yellow-500 text-white border-yellow-500';
+    if (level <= 9) return 'bg-lime-500 text-white border-lime-500';
+    return 'bg-green-500 text-white border-green-500';
+  };
+
+  return (
+    <div>
+      <label className={`block text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+        {label}:
+      </label>
+      <div className="grid grid-cols-5 gap-2">
+        {Array.from({ length: 10 }, (_, i) => i + 1).map((level) => (
+          <button
+            key={level}
+            type="button"
+            onClick={() => onChange(level)}
+            className={`h-10 w-full rounded-lg border-2 font-semibold text-sm transition-all duration-200 hover:scale-105 ${
+              getEnergyColor(level, value === level)
+            }`}
+          >
+            {level}
+          </button>
+        ))}
+      </div>
+      <p className={`text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+        Seleccionado: {value}/10
+      </p>
+    </div>
+  );
+};
+
 type WeightedExercise = AdaptedExercise & { defaultWeightKg?: number };
 
 const MUSCLE_TARGETS_ES_TO_EN: Record<string, string> = {
@@ -330,29 +377,51 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     } finally { setIsLoadingTemplates(false); }
   };
 
-  const applyTemplate = (tpl: WorkoutTemplate) => {
-    const mapped: AdaptedExercise[] = tpl.exercises.map((te, i) => ({
-      id: `template_${tpl.id || 'local'}_${i}`,
-      name: te.name,
-      category: 'strength',
-      primaryMuscles: [],
-      secondaryMuscles: [],
-      equipment: 'Peso corporal',
-      difficulty: 'beginner',
-      instructions: [],
-      gifUrl: '',
-      caloriesPerMinute: 6,
-      defaultSets: te.sets,
-      defaultReps: te.reps,
-      restTimeSeconds: te.restTime ?? 60,
-      bodyPart: 'waist',
-      target: 'abs',
-      ...(typeof te.weightKg === 'number' ? ({ defaultWeightKg: te.weightKg } as unknown as WeightedExercise) : {})
+  // Función para iniciar desde plantilla directamente
+const startWorkoutFromTemplate = async (tpl: WorkoutTemplate) => {
+  if (!user) return;
+  
+  try {
+    const exercises: Exercise[] = tpl.exercises.map((ex, index) => ({
+      id: `template_${tpl.id || 'local'}_${index}`,
+      name: ex.name,
+      sets: ex.sets,
+      reps: ex.reps,
+      weight: ex.weightKg || 0,
+      completed: false,
+      restTime: ex.restTime || 60,
+      notes: ''
     }));
-    setCustomWorkoutName(tpl.name);
-    setSelectedExercises(mapped);
-    setShowExerciseModal(true);
-  };
+
+    const payload: Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'> = {
+      name: tpl.name,
+      duration: 0,
+      isActive: true,
+      exercises,
+      totalCaloriesBurned: 0,
+      preEnergyLevel: preEnergy
+    };
+
+    const id = await workoutService.createWorkout(user.uid, payload);
+    const created: WorkoutSession = { 
+      ...payload, 
+      id, 
+      userId: user.uid, 
+      createdAt: Timestamp.fromDate(new Date()) 
+    };
+
+    setWorkoutHistory([created, ...workoutHistory]);
+    setFilteredHistory([created, ...filteredHistory]);
+    startWorkout(created);
+    
+    setTemplateNotice(`Rutina "${tpl.name}" iniciada`);
+    setTimeout(() => setTemplateNotice(null), 2000);
+  } catch (e) {
+    console.error(e);
+    setTemplateNotice('Error al iniciar la rutina');
+    setTimeout(() => setTemplateNotice(null), 2000);
+  }
+};
 
   const deleteTemplate = async (id: string) => {
     try { await workoutTemplateService.deleteTemplate(id); setTemplates(t => t.filter(x => x.id !== id)); }
@@ -448,7 +517,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                   }</div>
                 </div>
                 <div className="flex gap-2 mt-3">
-                  <button onClick={() => applyTemplate(tpl)} className={`${isDark ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'bg-purple-500 hover:bg-purple-600 text-white'} flex-1 py-2 rounded-lg text-sm`}>Usar</button>
+                  <button onClick={() => startWorkoutFromTemplate(tpl)} className={`${isDark ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'} flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-1`}><Play size={14} />Iniciar</button>
                   <button onClick={() => tpl.id && deleteTemplate(tpl.id)} className={`${isDark ? 'bg-red-700 hover:bg-red-800 text-white' : 'bg-red-500 hover:bg-red-600 text-white'} px-3 rounded-lg text-sm`} title="Eliminar plantilla">
                     <Trash2 size={16} />
                   </button>
@@ -467,7 +536,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
             <div className="ml-3">
               <p className="text-sm font-medium">Problema con la API de Ejercicios</p>
               <p className="text-sm">{apiError}</p>
-              <p className="text-xs mt-2">Para solucionarlo: Crea un archivo .env con VITE_RAPIDAPI_KEY=tu_clave_aqui</p>
+              <p className="text-xs mt-2"></p>
             </div>
           </div>
         </div>
@@ -621,16 +690,21 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
             <div className="space-y-6">
               <input type="text" placeholder="Nombre de la rutina..." value={customWorkoutName} onChange={(e) => setCustomWorkoutName(e.target.value)} className={`w-full px-4 py-3 rounded-lg border-none outline-none ${isDark ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph' : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'}`} />
               <div>
-                <label className={`${isDark ? 'text-gray-300' : 'text-gray-700'} text-sm`}>Energía antes (1-10)</label>
-                <input type="range" min={1} max={10} value={preEnergy} onChange={(e) => setPreEnergy(Number(e.target.value))} className="w-full" />
-                <div className={`${isDark ? 'text-gray-300' : 'text-gray-700'} text-xs mt-1`}>{preEnergy}/10</div>
+                
+                <EnergyLevelSelector 
+                  value={preEnergy} 
+                  onChange={setPreEnergy} 
+                  label="Energía antes del entrenamiento" 
+                  isDark={isDark} 
+                />
+                
               </div>
               {/* Búsqueda */}
               <div className="flex flex-col gap-2">
                 <div className="flex gap-3">
                   <div className="flex-1 relative">
                     <Search size={18} className={`absolute left-3 top-1/2 -translate-y-1/2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} />
-                    <input type="text" placeholder="Buscar por grupo muscular (p. ej., pecho, espalda, hombros)..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearchExercises()} className={`w-full pl-10 pr-4 py-3 rounded-lg border-none outline-none ${isDark ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph' : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'}`} />
+                    <input type="text" placeholder="Buscar por grupo muscular " value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearchExercises()} className={`w-full pl-10 pr-4 py-3 rounded-lg border-none outline-none ${isDark ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph' : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'}`} />
                   </div>
                   <button onClick={() => handleSearchExercises()} disabled={isLoadingExercises} className={`px-6 py-3 rounded-lg font-medium transition-all ${isLoadingExercises ? 'bg-gray-400 cursor-not-allowed' : isDark ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-dark-neumorph' : 'bg-blue-500 hover:bg-blue-600 text-white shadow-neumorph'}`}>
                     {isLoadingExercises ? 'Buscando...' : 'Buscar'}
@@ -647,8 +721,11 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
               <div>
                 {}
                 <div className="flex flex-col gap-2 mb-3">
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-                    <div className="flex flex-col">
+                  <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+                    <div className="md:col-span-6 mb-2">
+                      <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>Registro Manual</h3>
+                    </div>
+                    <div className="flex flex-col ">
                       <label className={`text-xs mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Nombre</label>
                       <input type="text" placeholder="Ej. Sentadillas" value={manualExerciseName} onChange={(e) => setManualExerciseName(e.target.value)} className={`w-full px-4 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'}`} />
                     </div>
@@ -668,24 +745,26 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                       <label className={`text-xs mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Peso (kg)</label>
                       <input type="number" min={0} value={manualWeight} onChange={(e) => setManualWeight(Math.max(0, Number(e.target.value) || 0))} className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'}`} />
                     </div>
-                    <button onClick={() => {
-                      if (!manualExerciseName.trim()) return;
-                      const nowId = `manual_${Date.now()}`;
-                      const manual: AdaptedExercise = {
-                        id: nowId,
-                        name: manualExerciseName.trim(),
-                        category: 'strength', primaryMuscles: [], secondaryMuscles: [],
-                        equipment: 'Peso corporal', difficulty: 'beginner', instructions: [], gifUrl: '',
-                        caloriesPerMinute: 6, defaultSets: manualSets, defaultReps: manualReps, restTimeSeconds: manualRest,
-                        bodyPart: 'waist', target: 'abs',
-                        // @ts-expect-error UI-extended
-                        defaultWeightKg: manualWeight
-                      };
-                      setSelectedExercises([...selectedExercises, manual]);
-                      setManualExerciseName('');
-                      setManualAddNotice('Ejercicio agregado');
-                      setTimeout(() => setManualAddNotice(null), 1500);
-                    }} className={`${isDark ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'} px-4 py-2 rounded-lg font-medium`}>Agregar</button>
+                    <div className="flex justify-end md:justify-start">
+                      <button onClick={() => {
+                        if (!manualExerciseName.trim()) return;
+                        const nowId = `manual_${Date.now()}`;
+                        const manual: AdaptedExercise = {
+                          id: nowId,
+                          name: manualExerciseName.trim(),
+                          category: 'strength', primaryMuscles: [], secondaryMuscles: [],
+                          equipment: 'Peso corporal', difficulty: 'beginner', instructions: [], gifUrl: '',
+                          caloriesPerMinute: 6, defaultSets: manualSets, defaultReps: manualReps, restTimeSeconds: manualRest,
+                          bodyPart: 'waist', target: 'abs',
+                          // @ts-expect-error UI-extended
+                          defaultWeightKg: manualWeight
+                        };
+                        setSelectedExercises([...selectedExercises, manual]);
+                        setManualExerciseName('');
+                        setManualAddNotice('Ejercicio agregado');
+                        setTimeout(() => setManualAddNotice(null), 1500);
+                      }} className={`${isDark ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'} px-3 py-1.5 rounded-lg text-sm`}>Agregar</button>
+                    </div>
                   </div>
                   {manualAddNotice && (<span className={`text-xs ${isDark ? 'text-green-300' : 'text-green-700'}`}>{manualAddNotice}</span>)}
                 </div>
@@ -770,8 +849,13 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className={`w-full max-w-md p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
             <h3 className={`text-lg font-semibold mb-4 ${isDark ? 'text-white' : 'text-gray-900'}`}>Finalizar rutina</h3>
-            <p className={`${isDark ? 'text-gray-300' : 'text-gray-700'} text-sm mb-3`}>Indica tu energía después del entrenamiento:</p>
-            <input type="range" min={1} max={10} value={postEnergy} onChange={(e) => setPostEnergy(Number(e.target.value))} className="w-full" />
+
+            <EnergyLevelSelector 
+              value={postEnergy} 
+              onChange={setPostEnergy} 
+              label="Energía después del entrenamiento" 
+              isDark={isDark} 
+            />
             <div className={`${isDark ? 'text-gray-300' : 'text-gray-700'} text-xs mt-1`}>{postEnergy}/10</div>
             <div className="flex gap-3 mt-4">
               <button onClick={() => setShowFinalizeConfirm(false)} className={`${isDark ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'} flex-1 py-2 rounded-lg`}>Cancelar</button>
