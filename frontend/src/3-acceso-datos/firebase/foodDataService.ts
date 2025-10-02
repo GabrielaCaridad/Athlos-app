@@ -19,12 +19,31 @@ import {
 import { db } from './config';
 
 /**
+ * Remueve propiedades undefined/null de un objeto para Firestore.
+ * Firebase no permite undefined en documentos, solo omitir el campo.
+ */
+function removeUndefinedFields<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const cleaned: Partial<T> = {};
+  for (const key in obj) {
+    const value = obj[key as keyof T];
+    if (value !== undefined && value !== null) {
+      cleaned[key as keyof T] = value as T[keyof T];
+    }
+  }
+  return cleaned;
+}
+
+/**
  * Interfaz para alimentos en la base de datos
  */
 export interface DatabaseFood {
   id?: string;
   name: string;
   calories: number;
+  protein?: number;        // gramos (por porción)
+  carbs?: number;          // gramos (por porción)
+  fats?: number;           // gramos (por porción)
+  fiber?: number;          // gramos (por porción)
   serving: string;
   category: 'fruits' | 'vegetables' | 'grains' | 'proteins' | 'dairy' | 'prepared' | 'beverages' | 'snacks' | 'other';
   usdaId?: string;
@@ -45,6 +64,10 @@ export interface UserFoodEntry {
   databaseFoodId: string;
   name: string;
   calories: number;
+  protein?: number;        // gramos totales (quantity incluida)
+  carbs?: number;          // gramos totales
+  fats?: number;           // gramos totales
+  fiber?: number;          // gramos totales
   serving: string;
   quantity: number;
   date: string;
@@ -58,9 +81,34 @@ export interface UserFoodEntry {
 interface CreateFoodData {
   name: string;
   calories: number;
+  protein?: number;
+  carbs?: number;
+  fats?: number;
+  fiber?: number;
   serving: string;
   category?: DatabaseFood['category'];
   alternativeNames?: string[];
+}
+
+/**
+ * Valida que las calorías declaradas coincidan con los macronutrientes
+ * 1g proteína = 4 kcal, 1g carbos = 4 kcal, 1g grasa = 9 kcal
+ */
+export function validateNutritionalCoherence(
+  calories: number,
+  protein: number,
+  carbs: number,
+  fats: number
+): { isValid: boolean; message?: string; calculatedCalories: number } {
+  const calculatedCalories = Math.round((protein * 4) + (carbs * 4) + (fats * 9));
+  const difference = Math.abs(calories - calculatedCalories);
+  return {
+    isValid: difference <= 20,
+    calculatedCalories,
+    message: difference > 20
+      ? `Calorías declaradas (${calories}) difieren de las calculadas (${calculatedCalories}) por ${difference} kcal`
+      : undefined
+  };
 }
 
 /**
@@ -126,9 +174,13 @@ export const foodDatabaseService = {
       }
 
       const now = Timestamp.now();
-      const databaseFood: Omit<DatabaseFood, 'id'> = {
+      const rawDatabaseFood = {
         name: foodData.name,
         calories: foodData.calories,
+        protein: foodData.protein,
+        carbs: foodData.carbs,
+        fats: foodData.fats,
+        fiber: foodData.fiber,
         serving: foodData.serving,
         category: foodData.category || 'other',
         isVerified: false,
@@ -137,9 +189,10 @@ export const foodDatabaseService = {
         createdAt: now,
         updatedAt: now,
         alternativeNames: foodData.alternativeNames || []
-      };
+      } as Partial<DatabaseFood> & { name: string; calories: number; serving: string; category: DatabaseFood['category']; isVerified: boolean; usageCount: number; createdAt: Timestamp; updatedAt: Timestamp };
 
-      const docRef = await addDoc(collection(db, 'foodDatabase'), databaseFood);
+      const cleanDatabaseFood = removeUndefinedFields(rawDatabaseFood);
+      const docRef = await addDoc(collection(db, 'foodDatabase'), cleanDatabaseFood);
       return docRef.id;
     } catch (error) {
       console.error('Error adding to food database:', error);
@@ -235,25 +288,79 @@ export const userFoodService = {
   ): Promise<string> {
     try {
       const databaseFoodId = await foodDatabaseService.addToDatabase(foodData, userId);
-      
-      const userFoodEntry: Omit<UserFoodEntry, 'id'> = {
-      userId,
-      databaseFoodId,
-      name: foodData.name,
-      calories: foodData.calories * quantity,
-      serving: foodData.serving,
-      quantity,
-      date,
-      mealType, // ← Verificar que esto se guarde
-      createdAt: Timestamp.now()
-    };
 
-      const docRef = await addDoc(collection(db, 'userFoodEntries'), userFoodEntry);
+      const rawEntry = {
+        userId,
+        databaseFoodId,
+        name: foodData.name,
+        calories: foodData.calories * quantity,
+        serving: foodData.serving,
+        quantity,
+        date,
+        mealType,
+        protein: typeof foodData.protein === 'number' ? foodData.protein * quantity : undefined,
+        carbs: typeof foodData.carbs === 'number' ? foodData.carbs * quantity : undefined,
+        fats: typeof foodData.fats === 'number' ? foodData.fats * quantity : undefined,
+        fiber: typeof foodData.fiber === 'number' ? foodData.fiber * quantity : undefined,
+        createdAt: Timestamp.now()
+      } as Partial<UserFoodEntry> & { userId: string; databaseFoodId: string; name: string; calories: number; serving: string; quantity: number; date: string; createdAt: Timestamp };
+
+      const cleanEntry = removeUndefinedFields(rawEntry);
+
+      const docRef = await addDoc(collection(db, 'userFoodEntries'), cleanEntry);
       return docRef.id;
     } catch (error) {
       console.error('Error adding user food entry:', error);
       throw error;
     }
+  },
+
+  /**
+   * Resumen de macronutrientes por día
+   */
+  async getDailyMacroSummary(userId: string, date: string): Promise<{
+    totalCalories: number;
+    totalProtein: number;
+    totalCarbs: number;
+    totalFats: number;
+    totalFiber: number;
+    byMealType: {
+      breakfast: { calories: number; protein: number; carbs: number; fats: number };
+      lunch: { calories: number; protein: number; carbs: number; fats: number };
+      dinner: { calories: number; protein: number; carbs: number; fats: number };
+      snack: { calories: number; protein: number; carbs: number; fats: number };
+    };
+  }> {
+    const foods = await this.getUserFoodsByDate(userId, date);
+    const summary = {
+      totalCalories: 0,
+      totalProtein: 0,
+      totalCarbs: 0,
+      totalFats: 0,
+      totalFiber: 0,
+      byMealType: {
+        breakfast: { calories: 0, protein: 0, carbs: 0, fats: 0 },
+        lunch: { calories: 0, protein: 0, carbs: 0, fats: 0 },
+        dinner: { calories: 0, protein: 0, carbs: 0, fats: 0 },
+        snack: { calories: 0, protein: 0, carbs: 0, fats: 0 }
+      }
+    };
+
+    for (const food of foods) {
+      summary.totalCalories += food.calories;
+      summary.totalProtein += food.protein || 0;
+      summary.totalCarbs += food.carbs || 0;
+      summary.totalFats += food.fats || 0;
+      summary.totalFiber += food.fiber || 0;
+      if (food.mealType) {
+        const bucket = summary.byMealType[food.mealType];
+        bucket.calories += food.calories;
+        bucket.protein += food.protein || 0;
+        bucket.carbs += food.carbs || 0;
+        bucket.fats += food.fats || 0;
+      }
+    }
+    return summary;
   },
 
   /**

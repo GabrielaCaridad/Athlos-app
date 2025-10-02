@@ -212,9 +212,61 @@ export interface WorkoutSession {
   completedAt?: Timestamp;
   totalCaloriesBurned?: number;
   totalWeightLifted?: number;
+  // Nuevos campos de performance
+  performanceScore?: number;  // 0-100
+  volumeLifted?: number;      // kg totales levantados
+  completionRate?: number;    // % ejercicios completados
 }
 
 export const workoutService = {
+  /**
+   * Calcula el performance score de un entrenamiento (0-100)
+   * Basado en: completitud (40%) + volumen (30%) + energía post (30%)
+   */
+  calculatePerformanceScore(
+    workout: WorkoutSession,
+    userHistoricalAverage?: number
+  ): number {
+    let score = 0;
+    // Completitud (40)
+    const completedCount = workout.exercises.filter(ex => ex.completed).length;
+    const totalCount = workout.exercises.length;
+    const completionRate = totalCount > 0 ? completedCount / totalCount : 0;
+    score += completionRate * 40;
+    // Volumen (30)
+    const totalVolume = workout.exercises.reduce((sum, ex) => {
+      if (ex.setsDetail && ex.setsDetail.length > 0) {
+        return sum + ex.setsDetail.reduce((setSum, set) => setSum + (set.reps * set.weight), 0);
+      }
+      return sum + (ex.sets * ex.reps * ex.weight);
+    }, 0);
+    if (userHistoricalAverage && userHistoricalAverage > 0) {
+      const volumeRatio = totalVolume / userHistoricalAverage;
+      score += Math.min(volumeRatio * 30, 30);
+    } else {
+      score += 15;
+    }
+    // Energía post (30)
+    const energyLevel = workout.postEnergyLevel || workout.preEnergyLevel || 5;
+    score += (energyLevel / 10) * 30;
+    return Math.min(Math.round(score), 100);
+  },
+
+  /**
+   * Obtiene el promedio histórico de volumen levantado del usuario
+   */
+  async getUserHistoricalAverageVolume(userId: string): Promise<number> {
+    try {
+      const workouts = await this.getUserWorkouts(userId);
+      const completedWorkouts = workouts.filter(w => !w.isActive && (typeof w.volumeLifted === 'number'));
+      if (completedWorkouts.length === 0) return 0;
+      const totalVolume = completedWorkouts.reduce((sum, w) => sum + (w.volumeLifted || 0), 0);
+      return totalVolume / completedWorkouts.length;
+    } catch (error) {
+      console.error('Error getting historical average:', error);
+      return 0;
+    }
+  },
   /**
    * Crear una nueva sesión de entrenamiento
    */
@@ -241,6 +293,48 @@ export const workoutService = {
       await updateDoc(workoutRef, updates);
     } catch (error) {
       console.error('Error updating workout:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Finalizar un entrenamiento con cálculo de performance
+   */
+  async finalizeWorkout(workoutId: string, userId: string, postEnergyLevel: number): Promise<void> {
+    try {
+      const workouts = await this.getUserWorkouts(userId);
+      const workout = workouts.find(w => w.id === workoutId);
+      if (!workout) throw new Error('Workout not found');
+
+      // Volumen total
+      const volumeLifted = workout.exercises.reduce((sum, ex) => {
+        if (ex.setsDetail && ex.setsDetail.length > 0) {
+          return sum + ex.setsDetail.reduce((setSum, set) => setSum + (set.reps * set.weight), 0);
+        }
+        return sum + (ex.sets * ex.reps * ex.weight);
+      }, 0);
+
+      // Completion rate
+      const completionRate = workout.exercises.length > 0
+        ? workout.exercises.filter(ex => ex.completed).length / workout.exercises.length
+        : 0;
+
+      // Promedio histórico de volumen
+      const historicalAverage = await this.getUserHistoricalAverageVolume(userId);
+
+      // Performance score
+      const performanceScore = this.calculatePerformanceScore({ ...workout, postEnergyLevel }, historicalAverage);
+
+      await this.updateWorkout(workoutId, {
+        isActive: false,
+        completedAt: Timestamp.fromDate(new Date()),
+        postEnergyLevel,
+        performanceScore,
+        volumeLifted,
+        completionRate
+      });
+    } catch (error) {
+      console.error('Error finalizing workout:', error);
       throw error;
     }
   },

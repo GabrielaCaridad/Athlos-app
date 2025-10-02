@@ -9,7 +9,7 @@ import {
   DatabaseFood, 
   UserFoodEntry 
 } from '../../../2-logica-negocio/servicios/foodDataService';
-import { Timestamp } from 'firebase/firestore';
+// import { Timestamp } from 'firebase/firestore';
 
 interface FoodTrackerProps {
   isDark: boolean;
@@ -29,18 +29,43 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   // Estados para la búsqueda de alimentos
   const [searchTerm, setSearchTerm] = useState('');
   const [databaseFoods, setDatabaseFoods] = useState<DatabaseFood[]>([]);
-  const [selectedDatabaseFood, setSelectedDatabaseFood] = useState<DatabaseFood | null>(null);
+  // Selección directa ya no se usa con el carrito
   const [isSearching, setIsSearching] = useState(false);
   
   // Estados para el formulario
-  const [quantity, setQuantity] = useState(1);
+  // Cantidad individual ya no se usa con el carrito
   const [selectedMealType, setSelectedMealType] = useState<MealType>('breakfast');
   const [customFood, setCustomFood] = useState({
     name: '',
     calories: 0,
+    protein: 0,
+    carbs: 0,
+    fats: 0,
+    fiber: 0,
     serving: '',
     category: 'other' as DatabaseFood['category']
   });
+
+  // Carrito de alimentos (multi-add)
+  interface LocalCreateFood {
+    name: string;
+    calories: number;
+    protein?: number;
+    carbs?: number;
+    fats?: number;
+    fiber?: number;
+    serving: string;
+    category: DatabaseFood['category'];
+  }
+  interface CartItem {
+    id: string;
+    food: DatabaseFood | LocalCreateFood;
+    quantity: number;
+    isFromDatabase: boolean;
+  }
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [isProcessingCart, setIsProcessingCart] = useState(false);
+  const [cartError, setCartError] = useState<string | null>(null);
 
   // Estados para estadísticas
   const [weeklyStats, setWeeklyStats] = useState({
@@ -145,58 +170,76 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   }, [searchTerm, isModalOpen, handleSearchDatabaseFoods]);
 
   const totalCalories = userFoods.reduce((sum, food) => sum + food.calories, 0);
+  const totalProtein = Math.round(userFoods.reduce((sum, f) => sum + (f.protein || 0), 0));
+  const totalCarbs = Math.round(userFoods.reduce((sum, f) => sum + (f.carbs || 0), 0));
+  const totalFats = Math.round(userFoods.reduce((sum, f) => sum + (f.fats || 0), 0));
 
-  const handleSelectDatabaseFood = (food: DatabaseFood) => {
-    setSelectedDatabaseFood(food);
-    setCustomFood({
-      name: food.name,
-      calories: food.calories,
-      serving: food.serving,
-      category: food.category
-    });
+  // Nota: selección directa ya no es necesaria con carrito; conservamos utilidades de formulario manual.
+
+  // Guardado individual ya no se usa con carrito (se preserva comportamiento mediante handleSaveAllFromCart)
+
+  // --- Carrito: agregar, actualizar, eliminar, guardar ---
+  const handleAddToCart = (food: DatabaseFood | LocalCreateFood, isFromDatabase: boolean) => {
+    const cartItem: CartItem = {
+      id: `cart_${Date.now()}_${Math.random()}`,
+      food,
+      quantity: 1,
+      isFromDatabase
+    };
+    setCart((prev) => [...prev, cartItem]);
   };
 
-  const handleAddFood = async () => {
-    if (!customFood.name.trim() || !user) return;
+  const handleUpdateCartQuantity = (itemId: string, newQuantity: number) => {
+    if (newQuantity < 0.1) return;
+    const q = Math.round(newQuantity * 10) / 10;
+    setCart((prev) => prev.map((it) => (it.id === itemId ? { ...it, quantity: q } : it)));
+  };
 
+  const handleRemoveFromCart = (itemId: string) => {
+    setCart((prev) => prev.filter((it) => it.id !== itemId));
+  };
+
+  const handleSaveAllFromCart = async () => {
+    if (!user || cart.length === 0) return;
     try {
-      const foodData = {
-        name: customFood.name,
-        calories: customFood.calories,
-        serving: customFood.serving,
-        category: customFood.category,
-        alternativeNames: []
-      };
-      
-      const entryId = await userFoodService.addUserFoodEntry(
-      user.uid,
-      foodData,
-      selectedDate,
-      quantity,
-      selectedMealType  
-      );
-
-      // Agregar al estado local
-      const newEntry: UserFoodEntry = {
-        id: entryId,
-        userId: user.uid,
-        databaseFoodId: selectedDatabaseFood?.id || 'custom',
-        name: customFood.name,
-        calories: customFood.calories * quantity,
-        serving: customFood.serving,
-        quantity,
-        date: selectedDate,
-        createdAt: Timestamp.fromDate(new Date()),
-      };
-      
-      setUserFoods([newEntry, ...userFoods]);
-      resetModal();
-      
-      // Recargar estadísticas
+      setIsProcessingCart(true);
+      setCartError(null);
+      const savePromises = cart.map(async (item) => {
+        const base = item.food;
+        const foodData = {
+          name: base.name,
+          calories: (base as DatabaseFood | LocalCreateFood).calories ?? 0,
+          protein: (base as DatabaseFood | LocalCreateFood).protein,
+          carbs: (base as DatabaseFood | LocalCreateFood).carbs,
+          fats: (base as DatabaseFood | LocalCreateFood).fats,
+          fiber: (base as DatabaseFood | LocalCreateFood).fiber,
+          serving: base.serving,
+          category: base.category || 'other',
+          alternativeNames: [] as string[]
+        };
+        return userFoodService.addUserFoodEntry(
+          user.uid,
+          foodData,
+          selectedDate,
+          item.quantity,
+          selectedMealType
+        );
+      });
+      await Promise.all(savePromises);
+      // Recargar alimentos y stats
+      const updatedFoods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
+      setUserFoods(updatedFoods);
       const stats = await userFoodService.getNutritionStats(user.uid, weekAgo, today);
       setWeeklyStats(stats);
-    } catch (error) {
-      console.error('Error adding food:', error);
+      // Limpieza y cerrar
+      setCart([]);
+      setIsModalOpen(false);
+      setSearchTerm('');
+    } catch (err) {
+      console.error('Error saving foods from cart:', err);
+      setCartError('No se pudieron guardar los alimentos');
+    } finally {
+      setIsProcessingCart(false);
     }
   };
 
@@ -217,11 +260,9 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
 
   const resetModal = () => {
   setIsModalOpen(false);
-  setSelectedDatabaseFood(null);
   setSearchTerm('');
-  setQuantity(1);
   setSelectedMealType('breakfast'); 
-  setCustomFood({ name: '', calories: 0, serving: '', category: 'other' });
+  setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
 };
 
   const getMealTypeLabel = (mealType: MealType) => {
@@ -292,6 +333,16 @@ const getCaloriesByMealType = (mealType: MealType) => {
               </p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Resumen diario de macronutrientes */}
+      <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Macros de hoy:</span>
+          <span className={`${isDark ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-700'} px-3 py-1 rounded-full text-xs font-medium`}>Proteína: {totalProtein} g</span>
+          <span className={`${isDark ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-700'} px-3 py-1 rounded-full text-xs font-medium`}>Carbohidratos: {totalCarbs} g</span>
+          <span className={`${isDark ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-700'} px-3 py-1 rounded-full text-xs font-medium`}>Grasas: {totalFats} g</span>
         </div>
       </div>
 
@@ -367,6 +418,19 @@ const getCaloriesByMealType = (mealType: MealType) => {
                       }`}>
                         {food.calories} kcal
                       </span>
+                      {(food.protein || food.carbs || food.fats) && (
+                        <div className="flex gap-1 text-xs">
+                          {food.protein ? (
+                            <span className={`${isDark ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-700'} px-1.5 py-0.5 rounded`}>P: {Math.round(food.protein)}g</span>
+                          ) : null}
+                          {food.carbs ? (
+                            <span className={`${isDark ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-700'} px-1.5 py-0.5 rounded`}>C: {Math.round(food.carbs)}g</span>
+                          ) : null}
+                          {food.fats ? (
+                            <span className={`${isDark ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-700'} px-1.5 py-0.5 rounded`}>G: {Math.round(food.fats)}g</span>
+                          ) : null}
+                        </div>
+                      )}
                       <button
                         onClick={() => handleDeleteFood(food.id!)}
                         className={`p-1 rounded transition-colors ${
@@ -508,21 +572,13 @@ const getCaloriesByMealType = (mealType: MealType) => {
                     </div>
                   ) : databaseFoods.length > 0 ? (
                     databaseFoods.map((food) => (
-                      <button
+                      <div
                         key={food.id}
-                        type="button"
-                        onClick={() => handleSelectDatabaseFood(food)}
                         className={`p-3 rounded-lg text-left transition-all ${
-                          selectedDatabaseFood?.id === food.id
-                            ? isDark
-                              ? 'bg-purple-600 text-white'
-                              : 'bg-purple-500 text-white'
-                            : isDark
-                            ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                          isDark ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                         }`}
                       >
-                        <div className="flex justify-between items-start">
+                        <div className="flex justify-between items-center gap-3">
                           <div className="flex-1">
                             <span className="text-sm font-medium">{food.name}</span>
                             <div className="text-xs opacity-75 mt-1">
@@ -537,9 +593,18 @@ const getCaloriesByMealType = (mealType: MealType) => {
                               </div>
                             )}
                           </div>
-                          <span className="text-xs ml-2">{food.calories} kcal</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs">{food.calories} kcal</span>
+                            <button
+                              type="button"
+                              onClick={() => handleAddToCart({ ...food }, true)}
+                              className={`${isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'} text-white px-3 py-1 rounded text-xs`}
+                            >
+                              + Agregar
+                            </button>
+                          </div>
                         </div>
-                      </button>
+                      </div>
                     ))
                   ) : (
                     <div className="text-center py-8">
@@ -551,28 +616,52 @@ const getCaloriesByMealType = (mealType: MealType) => {
                 </div>
               </div>
 
-              {/* Cantidad */}
-              {selectedDatabaseFood && (
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                    Cantidad:
-                  </label>
-                  <input
-                    type="number"
-                    min="0.1"
-                    step="0.1"
-                    placeholder="1.0"
-                    value={quantity}
-                    onChange={(e) => setQuantity(parseFloat(e.target.value) || 1)}
-                    className={`w-full px-4 py-3 rounded-lg border-none outline-none ${
-                      isDark
-                        ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph'
-                        : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
-                    }`}
-                  />
-                  <p className={`text-xs mt-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                    Calorías totales: {Math.round(customFood.calories * quantity)} kcal
-                  </p>
+              {/* Carrito temporal */}
+              {cart.length > 0 && (
+                <div className={`mt-2 p-4 rounded-xl border-2 ${isDark ? 'border-purple-600 bg-purple-900 bg-opacity-20' : 'border-purple-400 bg-purple-50'}`}>
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                      Carrito ({cart.length} {cart.length === 1 ? 'alimento' : 'alimentos'})
+                    </h4>
+                    <button onClick={() => setCart([])} className={`text-xs ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}>
+                      Vaciar
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {cart.map((item) => (
+                      <div key={item.id} className={`flex items-center justify-between p-2 rounded-lg ${isDark ? 'bg-gray-700' : 'bg-white'}`}>
+                        <div className="flex-1">
+                          <p className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>{item.food.name}</p>
+                          <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                            {('calories' in item.food ? (item.food as DatabaseFood).calories : (item.food as LocalCreateFood).calories)} kcal × {item.quantity}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => handleUpdateCartQuantity(item.id, item.quantity - 0.5)} disabled={item.quantity <= 0.5} className={`w-6 h-6 rounded flex items-center justify-center ${isDark ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'} disabled:opacity-30`}>-</button>
+                          <input type="number" min="0.1" step="0.5" value={item.quantity} onChange={(e) => handleUpdateCartQuantity(item.id, parseFloat(e.target.value) || 0.5)} className={`w-16 text-center px-2 py-1 rounded text-sm ${isDark ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-800'}`} />
+                          <button onClick={() => handleUpdateCartQuantity(item.id, item.quantity + 0.5)} className={`w-6 h-6 rounded flex items-center justify-center ${isDark ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'}`}>+</button>
+                          <button onClick={() => handleRemoveFromCart(item.id)} className={`ml-2 p-1 rounded ${isDark ? 'text-red-400 hover:bg-red-900' : 'text-red-500 hover:bg-red-50'}`}><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={`mt-3 pt-3 border-t ${isDark ? 'border-gray-600' : 'border-gray-200'}`}>
+                    <div className="flex justify-between text-sm">
+                      <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>Total:</span>
+                      <span className={`font-bold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+                        {cart.reduce((sum, item) => {
+                          const c = 'calories' in item.food ? (item.food as DatabaseFood).calories : (item.food as LocalCreateFood).calories;
+                          return sum + c * item.quantity;
+                        }, 0)} kcal
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {cartError && (
+                <div className={`p-3 rounded-lg text-sm ${isDark ? 'bg-red-900 text-red-200' : 'bg-red-50 text-red-700'}`}>
+                  {cartError}
                 </div>
               )}
 
@@ -620,6 +709,70 @@ const getCaloriesByMealType = (mealType: MealType) => {
                   />
                 </div>
 
+                {/* Macros */}
+                <div>
+                  <h4 className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                    Información Nutricional
+                  </h4>
+                  <div className="grid grid-cols-3 gap-3 mt-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="Proteína (g)"
+                      value={customFood.protein || ''}
+                      onChange={(e) => setCustomFood({ ...customFood, protein: parseFloat(e.target.value) || 0 })}
+                      className={`px-4 py-3 rounded-lg border-none outline-none ${
+                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
+                      }`}
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="Carbohidratos (g)"
+                      value={customFood.carbs || ''}
+                      onChange={(e) => setCustomFood({ ...customFood, carbs: parseFloat(e.target.value) || 0 })}
+                      className={`px-4 py-3 rounded-lg border-none outline-none ${
+                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
+                      }`}
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="Grasas (g)"
+                      value={customFood.fats || ''}
+                      onChange={(e) => setCustomFood({ ...customFood, fats: parseFloat(e.target.value) || 0 })}
+                      className={`px-4 py-3 rounded-lg border-none outline-none ${
+                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
+                      }`}
+                    />
+                  </div>
+                  {customFood.protein > 0 && customFood.carbs > 0 && customFood.fats > 0 && (
+                    <div className={`text-xs p-2 mt-2 rounded ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                      <div className="flex justify-between items-center">
+                        <span className={isDark ? 'text-gray-400' : 'text-gray-600'}>
+                          Calorías calculadas:
+                        </span>
+                        <span className={`font-mono ${
+                          Math.abs(customFood.calories - ((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))) > 20
+                            ? 'text-yellow-500'
+                            : 'text-green-500'
+                        }`}>
+                          {Math.round((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))} kcal
+                        </span>
+                      </div>
+                      {Math.abs(customFood.calories - ((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))) > 20 && (
+                        <div className="text-yellow-500 mt-1 flex items-center gap-1">
+                          <span>⚠️</span>
+                          <span>Discrepancia detectada entre calorías y macros</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <select
                   value={customFood.category}
                   onChange={(e) => setCustomFood({ ...customFood, category: e.target.value as DatabaseFood['category'] })}
@@ -643,7 +796,7 @@ const getCaloriesByMealType = (mealType: MealType) => {
               
               <div className="flex space-x-3 pt-4">
                 <button
-                  onClick={resetModal}
+                  onClick={() => { resetModal(); setCart([]); setSearchTerm(''); }}
                   className={`flex-1 py-3 rounded-lg font-medium transition-all ${
                     isDark
                       ? 'bg-gray-700 text-gray-300 hover:bg-gray-600 shadow-dark-neumorph'
@@ -653,10 +806,20 @@ const getCaloriesByMealType = (mealType: MealType) => {
                   Cancelar
                 </button>
                 <button
-                  onClick={handleAddFood}
-                  disabled={!customFood.name.trim() || customFood.calories <= 0}
-                  className={`flex-1 py-3 rounded-lg font-medium text-white transition-all flex items-center justify-center space-x-2 ${
-                    !customFood.name.trim() || customFood.calories <= 0
+                  onClick={() => {
+                    if (!customFood.name.trim() || customFood.calories <= 0) return;
+                    handleAddToCart({ ...customFood }, false);
+                    setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
+                  }}
+                  className={`${isDark ? 'bg-green-600 hover:bg-green-700' : 'bg-green-500 hover:bg-green-600'} text-white px-3 py-3 rounded-lg font-medium`}
+                >
+                  + Agregar al Carrito
+                </button>
+                <button
+                  onClick={handleSaveAllFromCart}
+                  disabled={cart.length === 0 || isProcessingCart}
+                  className={`flex-1 py-3 rounded-lg font-medium text-white transition-all flex items-center justify-center gap-2 ${
+                    cart.length === 0 || isProcessingCart
                       ? 'bg-gray-400 cursor-not-allowed'
                       : isDark
                       ? 'bg-purple-600 hover:bg-purple-700 shadow-dark-neumorph'
@@ -664,7 +827,7 @@ const getCaloriesByMealType = (mealType: MealType) => {
                   }`}
                 >
                   <Save size={16} />
-                  <span>Guardar</span>
+                  <span>{isProcessingCart ? 'Guardando…' : `Guardar ${cart.length > 0 ? `(${cart.length})` : 'Todo'}`}</span>
                 </button>
               </div>
             </div>

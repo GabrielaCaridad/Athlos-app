@@ -3,7 +3,7 @@
 
 
 import { useEffect, useState } from 'react';
-import { Play, Pause, Square, Plus, Clock, Flame, Target, Dumbbell, Search, Save, Trash2, Calendar, Filter, AlertCircle, X } from 'lucide-react';
+import { Play, Pause, Square, Plus, Clock, Flame, Target, Dumbbell, Search, Save, Trash2, Calendar, Filter, AlertCircle, X, Award, Zap } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { workoutService, WorkoutSession, Exercise, workoutTemplateService, WorkoutTemplate } from '../../../2-logica-negocio/servicios/firestoreService';
 import { exerciseAPIService, AdaptedExercise } from '../../../2-logica-negocio/servicios/exerciseAPI';
@@ -115,6 +115,9 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [showFinalizeConfirm, setShowFinalizeConfirm] = useState(false);
   const [preEnergy, setPreEnergy] = useState(5);
   const [postEnergy, setPostEnergy] = useState(5);
+  // Modal de completado y score
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [completedWorkoutScore, setCompletedWorkoutScore] = useState<number | null>(null);
 
   // Búsqueda/creación
   const [showExerciseModal, setShowExerciseModal] = useState(false);
@@ -338,26 +341,22 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     if (!activeWorkout || !user) return;
     if (!showFinalizeConfirm) { setShowFinalizeConfirm(true); return; }
     try {
-      const completed = activeWorkout.exercises.filter(e => e.completed);
-      const totalCalories = completed.reduce((sum, ex) => {
-        const ae = availableExercises.find(a => a.name === ex.name);
-        return sum + ((ae?.caloriesPerMinute || 6) * (timer / 60));
-      }, 0);
-      const updates: Partial<WorkoutSession> = {
-        duration: timer,
-        isActive: false,
-        postEnergyLevel: postEnergy,
-        completedAt: Timestamp.fromDate(new Date()),
-        totalCaloriesBurned: Math.round(totalCalories),
-        exercises: activeWorkout.exercises
-      };
-      await workoutService.updateWorkout(activeWorkout.id!, updates);
-      const merged = { ...activeWorkout, ...updates } as WorkoutSession;
-      const hist = workoutHistory.map(w => w.id === merged.id ? merged : w);
-      setWorkoutHistory(hist);
-      setFilteredHistory(hist);
+      // Actualizar duración antes de finalizar
+      await workoutService.updateWorkout(activeWorkout.id!, { duration: timer, exercises: activeWorkout.exercises });
+      // Finalizar con cálculo de performance
+      await workoutService.finalizeWorkout(activeWorkout.id!, user.uid, postEnergy);
+      // Obtener workout actualizado para mostrar score
+      const updatedList = await workoutService.getUserWorkouts(user.uid);
+      const updatedWorkout = updatedList.find(w => w.id === activeWorkout.id);
+      // Recargar historial y stats
+      setWorkoutHistory(updatedList);
+      setFilteredHistory(updatedList);
       const stats = await workoutService.getWeeklyStats(user.uid);
       setWorkoutStats(stats);
+      if (updatedWorkout?.performanceScore !== undefined) {
+        setCompletedWorkoutScore(updatedWorkout.performanceScore);
+        setShowCompletionModal(true);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -898,6 +897,32 @@ const startWorkoutFromTemplate = async (tpl: WorkoutTemplate) => {
                         <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                           {workout.createdAt && new Date(workout.createdAt.toDate()).toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                         </p>
+                        {workout.performanceScore !== undefined && !workout.isActive && (
+                          <div className="flex items-center gap-2 mt-2">
+                            <Target size={14} className={
+                              workout.performanceScore >= 80 ? 'text-green-500' :
+                              workout.performanceScore >= 60 ? 'text-yellow-500' :
+                              'text-red-500'
+                            } />
+                            <span className={`text-xs font-semibold ${
+                              workout.performanceScore >= 80 ? 'text-green-500' :
+                              workout.performanceScore >= 60 ? 'text-yellow-500' :
+                              'text-red-500'
+                            }`}>
+                              Performance: {workout.performanceScore}%
+                            </span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              workout.performanceScore >= 80 
+                                ? 'bg-green-900 bg-opacity-30 text-green-300'
+                                : workout.performanceScore >= 60
+                                ? 'bg-yellow-900 bg-opacity-30 text-yellow-300'
+                                : 'bg-red-900 bg-opacity-30 text-red-300'
+                            }`}>
+                              {workout.performanceScore >= 80 ? 'Excelente' :
+                               workout.performanceScore >= 60 ? 'Bien' : 'Mejorable'}
+                            </span>
+                          </div>
+                        )}
                         {workout.duration > 0 && (
                           <div className={`text-xs mt-1 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}><strong>Duración:</strong> {formatDuration(workout.duration)}</div>
                         )}
@@ -968,6 +993,68 @@ const startWorkoutFromTemplate = async (tpl: WorkoutTemplate) => {
         <div className="text-center py-12">
           <div className={`inline-block animate-spin rounded-full h-8 w-8 border-b-2 ${isDark ? 'border-purple-400' : 'border-purple-600'}`}></div>
           <p className={`mt-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Cargando datos del usuario...</p>
+        </div>
+      )}
+      {/* Modal de Entrenamiento Completado con Performance Score */}
+      {showCompletionModal && completedWorkoutScore !== null && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className={`w-full max-w-md p-6 rounded-2xl ${
+            isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
+          }`}>
+            <div className="text-center mb-4">
+              {completedWorkoutScore >= 80 ? (
+                <div className="w-20 h-20 mx-auto rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                  <Award size={40} className="text-green-500" />
+                </div>
+              ) : completedWorkoutScore >= 60 ? (
+                <div className="w-20 h-20 mx-auto rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
+                  <Target size={40} className="text-yellow-500" />
+                </div>
+              ) : (
+                <div className="w-20 h-20 mx-auto rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                  <Zap size={40} className="text-blue-500" />
+                </div>
+              )}
+            </div>
+            <h3 className={`text-xl font-bold text-center mb-2 ${isDark ? 'text-white' : 'text-gray-900'}`}>
+              ¡Entrenamiento Completado!
+            </h3>
+            <div className="text-center mb-4">
+              <div className={`text-6xl font-bold ${
+                completedWorkoutScore >= 80 ? 'text-green-500' :
+                completedWorkoutScore >= 60 ? 'text-yellow-500' :
+                'text-blue-500'
+              }`}>
+                {completedWorkoutScore}%
+              </div>
+              <p className={`text-sm mt-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                Performance Score
+              </p>
+            </div>
+            <p className={`text-center text-sm mb-6 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+              {completedWorkoutScore >= 80 
+                ? '¡Excelente sesión! Superaste tus expectativas 💪'
+                : completedWorkoutScore >= 60
+                ? '¡Buen trabajo! Sigue así para mejorar 👍'
+                : '¡Lo lograste! Cada entrenamiento cuenta 🏋️'}
+            </p>
+            <div className={`p-3 rounded-lg mb-4 ${
+              isDark ? 'bg-gray-700' : 'bg-gray-100'
+            }`}>
+              <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                <strong>Performance Score:</strong> Basado en ejercicios completados (40%), 
+                volumen levantado vs tu promedio (30%) y energía post-entrenamiento (30%).
+              </p>
+            </div>
+            <button
+              onClick={() => { setShowCompletionModal(false); setCompletedWorkoutScore(null); }}
+              className={`w-full py-3 rounded-lg font-medium text-white ${
+                isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'
+              }`}
+            >
+              Continuar
+            </button>
+          </div>
         </div>
       )}
     </div>
