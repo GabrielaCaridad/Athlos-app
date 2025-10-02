@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth } from '../../infrastructure/config/firebase';
+import { auth } from '../../3-acceso-datos/firebase/config';
 // useAuth: expone usuario actual, loading inicial y logout
 export const useAuth = (): {
   user: User | null;

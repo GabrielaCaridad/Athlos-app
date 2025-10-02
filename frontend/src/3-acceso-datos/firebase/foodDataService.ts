@@ -16,7 +16,7 @@ import {
   setDoc,
   increment
 } from 'firebase/firestore';
-import { db } from '../../infrastructure/config/firebase';
+import { db } from './config';
 
 /**
  * Interfaz para alimentos en la base de datos

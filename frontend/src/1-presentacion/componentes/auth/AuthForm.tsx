@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, Mail, Lock, User, Dumbbell, ArrowRight, Loader } from 'lucide-react';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { auth } from '../../../infrastructure/config/firebase';
+import { auth } from '../../../3-acceso-datos/firebase/config';
 
 interface AuthFormProps {
   isDark: boolean;

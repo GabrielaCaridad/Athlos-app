@@ -11,7 +11,7 @@ import {
   where, // Para filtros en consultas
   Timestamp // Para manejar fechas de Firebase
 } from 'firebase/firestore';
-import { db } from '../../infrastructure/config/firebase';
+import { db } from './config';
 
 // User profile model
 export interface UserProfile {

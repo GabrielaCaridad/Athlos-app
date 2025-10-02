@@ -5,8 +5,8 @@
 import { useEffect, useState } from 'react';
 import { Play, Pause, Square, Plus, Clock, Flame, Target, Dumbbell, Search, Save, Trash2, Calendar, Filter, AlertCircle, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
-import { workoutService, WorkoutSession, Exercise, workoutTemplateService, WorkoutTemplate } from '../../../business/services/firestoreService';
-import { exerciseAPIService, AdaptedExercise } from '../../../business/services/exerciseAPI';
+import { workoutService, WorkoutSession, Exercise, workoutTemplateService, WorkoutTemplate } from '../../../2-logica-negocio/servicios/firestoreService';
+import { exerciseAPIService, AdaptedExercise } from '../../../2-logica-negocio/servicios/exerciseAPI';
 import { Timestamp } from 'firebase/firestore';
 
 interface WorkoutTrackerProps {

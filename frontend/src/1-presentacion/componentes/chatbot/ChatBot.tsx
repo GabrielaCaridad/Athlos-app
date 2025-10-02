@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { MessageCircle, X, Send, Zap, Utensils, Dumbbell,TrendingUp, Award } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
-import { getContextualResponse, UserData } from '../../../business/services/chatService';
+import { getContextualResponse, UserData } from '../../../2-logica-negocio/servicios/chatService';
 
 interface Message {
   id: number;
@@ -16,7 +16,7 @@ interface ChatBotProps {
 }
 
 export default function ChatBot({ isDark }: ChatBotProps) {
-  const { user } = useAuth();
+  useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {

@@ -4,7 +4,7 @@ Aplicación frontend para seguimiento de entrenamientos y alimentación. Usa Fir
 
 ## Requisitos
 - Node.js 18+
-- Cuenta y proyecto de Firebase (ya configurado en `src/infrastructure/config/firebase.ts`).
+- Cuenta y proyecto de Firebase (configurado en `src/3-acceso-datos/firebase/config.ts`).
 - Clave de RapidAPI para ExerciseDB.
 
 ## Configuración de entorno
@@ -12,6 +12,7 @@ Crea el archivo `.env` en `frontend/` con:
 
 ```
 VITE_RAPIDAPI_KEY=tu_clave_de_rapidapi
+VITE_OPENAI_API_KEY=tu_clave_openai   # opcional, el ChatBot tiene fallback
 ```
 
 ## Scripts
@@ -27,13 +28,11 @@ npm install ; npm run dev
 ```
 Abre el enlace que muestra Vite (por defecto http://localhost:5173).
 
-## Estructura principal
-- `src/App.tsx`: contenedor principal, navegación y gating por autenticación.
-- `src/presentation/components/workout/WorkoutTracker.tsx`: flujo completo de entrenamientos (buscar ejercicios, agregar manualmente, editar series/reps/descanso, crear e iniciar, historial).
-- `src/presentation/components/food/FoodTracker.tsx`: registro de comidas y totales diarios/semanales.
-- `src/business/services/`: servicios de Firestore (`firestoreService.ts`), ExerciseDB (`exerciseAPI.ts`) y base de datos de alimentos (`foodDataService.ts`).
-- `src/infrastructure/config/firebase.ts`: inicialización de Firebase.
-- `src/presentation/hooks/useAuth.ts`: estado de autenticación.
+## Estructura principal (resumen)
+- `src/1-presentacion/`: componentes UI, pantallas y hooks para la experiencia de usuario.
+- `src/2-logica-negocio/servicios/`: capa de servicios (re-exports) usada por la UI.
+- `src/3-acceso-datos/`: acceso a datos y adaptadores (FireStore, APIs externas).
+- `src/vite-env.d.ts`: tipos para variables de entorno de Vite (p. ej. `VITE_RAPIDAPI_KEY`).
 
 Documentación de módulos y archivos: ver `DOCS.md`.
 

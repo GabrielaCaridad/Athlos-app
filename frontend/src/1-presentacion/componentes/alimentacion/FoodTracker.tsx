@@ -8,7 +8,7 @@ import {
   userFoodService, 
   DatabaseFood, 
   UserFoodEntry 
-} from '../../../business/services/foodDataService';
+} from '../../../2-logica-negocio/servicios/foodDataService';
 import { Timestamp } from 'firebase/firestore';
 
 interface FoodTrackerProps {
