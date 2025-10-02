@@ -190,7 +190,7 @@ export const foodDatabaseService = {
    */
   async initializeDatabase(): Promise<void> {
     try {
-      const { verifiedFoods } = await import('../../data/models/VerifiedFoods');
+  const { verifiedFoods } = await import('../datos-locales/VerifiedFoods');
       
       for (const verifiedFood of verifiedFoods) {
         const existingFood = await this.getFoodById(verifiedFood.id);

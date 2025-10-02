@@ -4,15 +4,15 @@
 // - Aplica tema claro/oscuro.
 import { useState } from 'react';
 import { Home, Utensils, Dumbbell, Trophy, Menu, X, TrendingUp } from 'lucide-react';
-import CorrelationsDashboard from './presentation/components/correlaciones/CorrelationsDashboard';
-import { useAuth } from './presentation/hooks/useAuth';
-import AuthForm from './presentation/components/auth/AuthForm';       
-import LoadingScreen from './presentation/components/auth/LoadingScreen';
-import UserProfile from './presentation/components/common/UserProfile'; 
-import ThemeToggle from './presentation/components/common/ThemeToggle'; 
-import FoodTracker from './presentation/components/food/FoodTracker';
-import WorkoutTracker from './presentation/components/workout/WorkoutTracker';
-import ChatBot from './presentation/components/ChatBot/ChatBot';
+import CorrelationsDashboard from './componentes/correlaciones/CorrelationsDashboard';
+import { useAuth } from './hooks/useAuth';
+import AuthForm from './componentes/auth/AuthForm';       
+import LoadingScreen from './componentes/auth/LoadingScreen';
+import UserProfile from './componentes/comun/UserProfile'; 
+import ThemeToggle from './componentes/comun/ThemeToggle'; 
+import FoodTracker from './componentes/alimentacion/FoodTracker';
+import WorkoutTracker from './componentes/entrenamiento/WorkoutTracker';
+import ChatBot from './componentes/chatbot/ChatBot';
 
 type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements' | 'correlations';
 
