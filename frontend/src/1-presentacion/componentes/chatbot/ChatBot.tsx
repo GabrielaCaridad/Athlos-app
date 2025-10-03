@@ -1,15 +1,7 @@
-import { useState } from 'react';
-import { MessageCircle, X, Send, Zap, Utensils, Dumbbell,TrendingUp, Award } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { MessageCircle, X, Send, Zap, Utensils, Dumbbell, TrendingUp, Award, Trash2, RefreshCcw } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
-import { getContextualResponse, UserData } from '../../../2-logica-negocio/servicios/chatService';
-
-interface Message {
-  id: number;
-  text: string;
-  isUser: boolean;
-  timestamp: Date;
-  type?: 'recommendation' | 'achievement' | 'normal';
-}
+import { useChat, Message } from '../../hooks/useChat';
 
 interface ChatBotProps {
   isDark: boolean;
@@ -18,16 +10,9 @@ interface ChatBotProps {
 export default function ChatBot({ isDark }: ChatBotProps) {
   useAuth();
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 1,
-      text: "¡Hola! Soy Apolo, tu entrenador personal AI. Analizo tus datos de fitness y bienestar para darte recomendaciones personalizadas. ¿En qué puedo ayudarte hoy?",
-      isUser: false,
-      timestamp: new Date(),
-      type: 'normal'
-    }
-  ]);
   const [inputText, setInputText] = useState('');
+  const { messages, isLoading, error, sendMessage, clearMessages, retryLastMessage, isRateLimited } = useChat();
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const quickActions = [
     { text: "//Registrar comida", icon: Utensils, category: 'nutrition' },
@@ -35,51 +20,9 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     { text: "//Ver progreso", icon: TrendingUp, category: 'progress' }
   ];
 
-  const sendMessage = async () => {
+  const handleSend = async () => {
     if (!inputText.trim()) return;
-
-    const userMessage: Message = {
-      id: messages.length + 1,
-      text: inputText,
-      isUser: true,
-      timestamp: new Date(),
-      type: 'normal'
-    };
-
-    // Simular datos del usuario para el contexto (shape esperado)
-    const mockUserData: UserData = {
-      foods: [], // En producción vendría de Firestore
-      workouts: [],
-      wellness: [],
-      totalCaloriesToday: Math.floor(Math.random() * 800) + 1200,
-      lastWorkout: undefined,
-      nextWorkout: undefined
-    };
-
-    try {
-      const response = await getContextualResponse(inputText, mockUserData);
-      const botMessage: Message = {
-        id: messages.length + 2,
-        text: response.message,
-        isUser: false,
-        timestamp: new Date(),
-        type: response.type
-      };
-      
-      setMessages(prev => [...prev, userMessage, botMessage]);
-    } catch (error) {
-      console.error('Error getting contextual response:', error);
-      // Fallback response
-      const fallbackMessage: Message = {
-        id: messages.length + 2,
-        text: "Disculpa, estoy procesando mucha información. ¿Podrías repetir tu pregunta?",
-        isUser: false,
-        timestamp: new Date(),
-        type: 'normal'
-      };
-      setMessages(prev => [...prev, userMessage, fallbackMessage]);
-    }
-
+    await sendMessage(inputText.trim());
     setInputText('');
   };
 
@@ -88,27 +31,19 @@ export default function ChatBot({ isDark }: ChatBotProps) {
   };
 
   const getMessageStyle = (message: Message) => {
-    if (message.isUser) {
-      return isDark
-        ? 'bg-purple-600 text-white shadow-dark-neumorph'
-        : 'bg-purple-500 text-white shadow-neumorph';
-    }
-    
-    switch (message.type) {
-      case 'recommendation':
-        return isDark
-          ? 'bg-blue-800 bg-opacity-50 text-blue-200 shadow-dark-neumorph border border-blue-600'
-          : 'bg-blue-50 text-blue-800 shadow-neumorph border border-blue-200';
-      case 'achievement':
-        return isDark
-          ? 'bg-green-800 bg-opacity-50 text-green-200 shadow-dark-neumorph border border-green-600'
-          : 'bg-green-50 text-green-800 shadow-neumorph border border-green-200';
-      default:
-        return isDark
-          ? 'bg-gray-700 text-white shadow-dark-neumorph'
-          : 'bg-gray-100 text-gray-800 shadow-neumorph';
-    }
+    if (message.isUser) return isDark ? 'bg-purple-600 text-white' : 'bg-purple-500 text-white';
+    if (message.type === 'recommendation') return isDark ? 'bg-blue-800 text-blue-200' : 'bg-blue-50 text-blue-800';
+    if (message.type === 'achievement') return isDark ? 'bg-green-800 text-green-200' : 'bg-green-50 text-green-800';
+    if (message.type === 'error') return isDark ? 'bg-red-800 text-red-200' : 'bg-red-50 text-red-800';
+    return isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-800';
   };
+
+  useEffect(() => {
+    // Auto-scroll to last
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [messages, isOpen]);
 
   return (
     <>
@@ -159,29 +94,27 @@ export default function ChatBot({ isDark }: ChatBotProps) {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 p-4 space-y-4 overflow-y-auto h-80">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
-              >
-                <div className={`max-w-xs px-4 py-3 rounded-2xl text-sm ${getMessageStyle(message)}`}>
-                  {message.text}
-                  {message.type === 'recommendation' && (
-                    <div className="mt-2 flex items-center space-x-1">
-                      <TrendingUp size={12} />
-                      <span className="text-xs opacity-75">Recomendación AI</span>
-                    </div>
+          <div ref={listRef} className="flex-1 p-4 space-y-3 overflow-y-auto h-80">
+            {messages.map((m) => (
+              <div key={m.id} className={`flex ${m.isUser ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm ${getMessageStyle(m)} ${isDark ? 'shadow-dark-neumorph' : 'shadow-neumorph'}`}>
+                  <div className="whitespace-pre-wrap break-words">{m.text}</div>
+                  {!m.isUser && m.type === 'recommendation' && (
+                    <div className="mt-2 flex items-center gap-1 text-xs opacity-80"><TrendingUp size={12} /> Recomendación</div>
                   )}
-                  {message.type === 'achievement' && (
-                    <div className="mt-2 flex items-center space-x-1">
-                      <Award size={12} />
-                      <span className="text-xs opacity-75">¡Logro desbloqueado!</span>
-                    </div>
+                  {!m.isUser && m.type === 'achievement' && (
+                    <div className="mt-2 flex items-center gap-1 text-xs opacity-80"><Award size={12} /> ¡Logro!</div>
                   )}
                 </div>
               </div>
             ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className={`px-4 py-3 rounded-2xl text-sm ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-800'}`}>
+                  <span className="inline-block animate-pulse">Apolo está escribiendo…</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Quick Actions */}
@@ -203,16 +136,24 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                 </button>
               ))}
             </div>
+            {error && (
+              <div className={`text-xs ${isDark ? 'text-red-300' : 'text-red-600'}`}>{error}</div>
+            )}
+            {isRateLimited && (
+              <div className={`text-xs ${isDark ? 'text-yellow-300' : 'text-yellow-700'}`}>
+                Has alcanzado el límite de uso. Intenta más tarde.
+              </div>
+            )}
           </div>
 
           {/* Input */}
           <div className={`p-4 border-t ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
-            <div className="flex space-x-2">
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 placeholder="Pregúntame sobre fitness, nutrición o bienestar..."
                 className={`flex-1 px-4 py-3 rounded-xl text-sm border-none outline-none ${
                   isDark
@@ -220,8 +161,17 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                     : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
                 }`}
               />
+              <div className={`text-xs ${inputText.length > 500 ? 'text-red-500' : isDark ? 'text-gray-400' : 'text-gray-500'}`}>{inputText.length}/500</div>
+              <button onClick={() => clearMessages()} className={`${isDark ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-black'} p-2`} title="Limpiar">
+                <Trash2 size={16} />
+              </button>
+              {!!error && (
+                <button onClick={retryLastMessage} className={`${isDark ? 'text-yellow-300 hover:text-yellow-100' : 'text-yellow-700 hover:text-yellow-900'} p-2`} title="Reintentar">
+                  <RefreshCcw size={16} />
+                </button>
+              )}
               <button
-                onClick={sendMessage}
+                onClick={handleSend}
                 className={`p-3 rounded-xl transition-all ${
                   isDark
                     ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-dark-neumorph'
@@ -230,6 +180,9 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               >
                 <Send size={16} />
               </button>
+            </div>
+            <div className={`text-[10px] mt-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+              Apolo es un asistente AI. Consulta profesionales para asesoría médica.
             </div>
           </div>
         </div>
