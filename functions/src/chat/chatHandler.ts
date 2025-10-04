@@ -479,13 +479,69 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 10, memory: 
         wasFromCache,
       } satisfies ChatResponsePayload;
     } catch (e: any) {
-      const code = (e?.code as string) || 'internal';
-      const msg = (e?.message as string) || 'Error interno del servidor';
-      // Map to HttpsError if not already
+      console.error('🔴 Error en chat handler:', e);
+      // Si ya es HttpsError, lanzarlo directamente
       if (e instanceof HttpsError) {
         throw e;
-      } else {
-        throw new HttpsError(code as any, msg);
       }
+
+      // Solo usar códigos válidos de HttpsError
+      let errorCode:
+        | 'cancelled'
+        | 'unknown'
+        | 'invalid-argument'
+        | 'deadline-exceeded'
+        | 'not-found'
+        | 'already-exists'
+        | 'permission-denied'
+        | 'resource-exhausted'
+        | 'failed-precondition'
+        | 'aborted'
+        | 'out-of-range'
+        | 'unimplemented'
+        | 'internal'
+        | 'unavailable'
+        | 'data-loss'
+        | 'unauthenticated' = 'internal';
+
+      const originalCode = String(e?.code || '');
+
+      // Mapear código numérico 9 de Firestore (FAILED_PRECONDITION)
+      if (originalCode === '9' || e?.code === 9) {
+        errorCode = 'failed-precondition';
+      }
+      // Mapear códigos comunes a códigos válidos de HttpsError
+      if (originalCode === 'ECONNREFUSED' || originalCode === 'ETIMEDOUT' || originalCode === 'ENOTFOUND') {
+        errorCode = 'unavailable';
+      } else if (originalCode?.includes('auth') || originalCode === 'unauthenticated') {
+        errorCode = 'unauthenticated';
+      } else if (originalCode === 'permission-denied' || originalCode === 'PERMISSION_DENIED') {
+        errorCode = 'permission-denied';
+      } else if (originalCode === 'resource-exhausted' || originalCode === 'RESOURCE_EXHAUSTED') {
+        errorCode = 'resource-exhausted';
+      } else if (originalCode === 'failed-precondition' || originalCode === 'FAILED_PRECONDITION') {
+        errorCode = 'failed-precondition';
+      } else if (originalCode === 'deadline-exceeded' || originalCode === 'DEADLINE_EXCEEDED') {
+        errorCode = 'deadline-exceeded';
+      } else if (originalCode === 'invalid-argument' || originalCode === 'INVALID_ARGUMENT') {
+        errorCode = 'invalid-argument';
+      } else if (originalCode === 'internal') {
+        errorCode = 'internal';
+      } else if (originalCode === 'not-found') {
+        errorCode = 'not-found';
+      } else if (originalCode === 'already-exists') {
+        errorCode = 'already-exists';
+      } else if (originalCode === 'aborted') {
+        errorCode = 'aborted';
+      } else if (originalCode === 'unimplemented') {
+        errorCode = 'unimplemented';
+      } else if (originalCode === 'data-loss') {
+        errorCode = 'data-loss';
+      } else if (originalCode === 'unknown') {
+        errorCode = 'unknown';
+      }
+
+      const msg = (e?.message as string) || 'Error interno del servidor';
+      throw new HttpsError(errorCode, msg);
     }
   });
