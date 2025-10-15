@@ -13,7 +13,6 @@ import {
   where, 
   Timestamp,
   getDoc,
-  setDoc,
   increment
 } from 'firebase/firestore';
 import { db } from './config';
@@ -46,8 +45,10 @@ export interface DatabaseFood {
   fiber?: number;          // gramos (por porción)
   serving: string;
   category: 'fruits' | 'vegetables' | 'grains' | 'proteins' | 'dairy' | 'prepared' | 'beverages' | 'snacks' | 'other';
-  usdaId?: string;
-  isVerified: boolean;
+  source?: 'USDA' | 'custom';
+  fdcId?: number;          // ID numérico de USDA cuando exista
+  usdaId?: string;         // legacy, mantenido por compatibilidad
+  isVerified: boolean;     // true si viene de USDA o fue revisado
   usageCount: number;
   createdBy?: string;
   createdAt: Timestamp;
@@ -127,10 +128,18 @@ export const foodDatabaseService = {
           orderBy('createdAt', 'desc')
         );
         const querySnapshot = await getDocs(q);
-        return querySnapshot.docs.slice(0, limit).map(doc => ({
+        const base = querySnapshot.docs.slice(0, limit).map(doc => ({
           id: doc.id,
           ...doc.data()
         })) as DatabaseFood[];
+        // Orden: USDA verificados primero por uso, luego personalizados
+        return base.sort((a, b) => {
+          const aVerified = (a.isVerified || a.source === 'USDA') ? 1 : 0;
+          const bVerified = (b.isVerified || b.source === 'USDA') ? 1 : 0;
+          if (bVerified !== aVerified) return bVerified - aVerified;
+          if ((b.usageCount || 0) !== (a.usageCount || 0)) return (b.usageCount || 0) - (a.usageCount || 0);
+          return 0;
+        }).slice(0, limit);
       }
 
       const q = query(collection(db, 'foodDatabase'), orderBy('usageCount', 'desc'));
@@ -148,8 +157,18 @@ export const foodDatabaseService = {
             alt.toLowerCase().includes(searchLower)
           );
           return nameMatch || altNamesMatch;
-        })
-        .slice(0, limit);
+        });
+
+      // Orden: USDA verificados primero por coincidencia y uso
+      results.sort((a, b) => {
+        const aVerified = (a.isVerified || a.source === 'USDA') ? 1 : 0;
+        const bVerified = (b.isVerified || b.source === 'USDA') ? 1 : 0;
+        if (bVerified !== aVerified) return bVerified - aVerified;
+        if ((b.usageCount || 0) !== (a.usageCount || 0)) return (b.usageCount || 0) - (a.usageCount || 0);
+        return 0;
+      });
+      
+      return results.slice(0, limit);
 
       return results;
     } catch (error) {
@@ -161,8 +180,19 @@ export const foodDatabaseService = {
   /**
    * Agregar un nuevo alimento a la base de datos
    */
-  async addToDatabase(foodData: CreateFoodData, userId: string): Promise<string> {
+  async addToDatabase(foodData: CreateFoodData & { fdcId?: number; source?: DatabaseFood['source'] }, userId: string): Promise<string> {
     try {
+      // Evitar duplicados por fdcId si viene de USDA
+      if (foodData.fdcId) {
+        const qFdc = query(collection(db, 'foodDatabase'), where('fdcId', '==', foodData.fdcId));
+        const qFdcSnap = await getDocs(qFdc);
+        if (!qFdcSnap.empty) {
+          const docFound = qFdcSnap.docs[0];
+          await this.incrementUsage(docFound.id);
+          return docFound.id;
+        }
+      }
+
       const existingFoods = await this.searchFoods(foodData.name, 5);
       const similarFood = existingFoods.find(food => 
         food.name.toLowerCase() === foodData.name.toLowerCase()
@@ -183,7 +213,9 @@ export const foodDatabaseService = {
         fiber: foodData.fiber,
         serving: foodData.serving,
         category: foodData.category || 'other',
-        isVerified: false,
+        source: foodData.source || 'custom',
+        fdcId: foodData.fdcId,
+        isVerified: (foodData.source === 'USDA') || false,
         usageCount: 1,
         createdBy: userId,
         createdAt: now,
@@ -237,39 +269,6 @@ export const foodDatabaseService = {
       throw error;
     }
   },
-
-  /**
-   * Inicializar base de datos con alimentos verificados
-   */
-  async initializeDatabase(): Promise<void> {
-    try {
-  const { verifiedFoods } = await import('../datos-locales/VerifiedFoods');
-      
-      for (const verifiedFood of verifiedFoods) {
-        const existingFood = await this.getFoodById(verifiedFood.id);
-        
-        if (!existingFood) {
-          const databaseFood: Omit<DatabaseFood, 'id'> = {
-            name: verifiedFood.name,
-            calories: verifiedFood.calories,
-            serving: verifiedFood.serving,
-            category: verifiedFood.category,
-            usdaId: verifiedFood.usdaId,
-            isVerified: true,
-            usageCount: 0,
-            createdAt: Timestamp.now(),
-            updatedAt: Timestamp.now(),
-            alternativeNames: []
-          };
-
-          await setDoc(doc(db, 'foodDatabase', verifiedFood.id), databaseFood);
-        }
-      }
-    } catch (error) {
-      console.error('Error initializing food database:', error);
-      throw error;
-    }
-  }
 };
 
 /**
@@ -281,7 +280,7 @@ export const userFoodService = {
    */
   async addUserFoodEntry(
     userId: string, 
-    foodData: CreateFoodData, 
+    foodData: CreateFoodData & { fdcId?: number; source?: DatabaseFood['source'] }, 
     date: string,
     quantity: number = 1,
     mealType?: UserFoodEntry['mealType']
@@ -294,7 +293,7 @@ export const userFoodService = {
         databaseFoodId,
         name: foodData.name,
         calories: foodData.calories * quantity,
-        serving: foodData.serving,
+  serving: foodData.serving,
         quantity,
         date,
         mealType,

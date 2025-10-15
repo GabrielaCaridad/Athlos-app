@@ -122,15 +122,16 @@ export const useChat = () => {
       const code: string = e?.code || e?.message || 'unknown';
       let msg = 'Error al enviar el mensaje. Intenta de nuevo.';
 
-      if (code.includes('unauthenticated') || code.includes('UNAUTHENTICATED')) {
+      // Manejo mejorado de timeouts
+      if (code === 'TIMEOUT' || code.toLowerCase().includes('timeout') || code.toUpperCase().includes('DEADLINE')) {
+        msg = 'La respuesta tardó demasiado. Intenta con una pregunta más simple.';
+      } else if (code.includes('unauthenticated') || code.includes('UNAUTHENTICATED')) {
         msg = 'Debes iniciar sesión para usar el chat.';
       } else if (code.includes('resource-exhausted') || code.includes('RESOURCE_EXHAUSTED')) {
         msg = 'Has alcanzado el límite de uso. Intenta más tarde.';
         setIsRateLimited(true);
       } else if (code.includes('invalid-argument') || code.includes('INVALID_ARGUMENT')) {
         msg = 'Mensaje inválido. Verifica el contenido.';
-      } else if (code.includes('deadline-exceeded') || code.includes('DEADLINE_EXCEEDED')) {
-        msg = 'Tiempo de espera agotado. Intenta de nuevo.';
       } else if (code.includes('unavailable') || code.includes('UNAVAILABLE')) {
         msg = 'Servicio no disponible temporalmente.';
       } else if (code.includes('internal') || code.includes('INTERNAL')) {

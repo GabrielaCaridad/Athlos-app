@@ -32,20 +32,39 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       if (!user) return;
       setLoading(true);
       try {
-        const days = 14;
+  const days = 30;
         const today = new Date();
         const points: CorrelationDataPoint[] = [];
+        let filteredNoWorkoutDays = 0;
+        let totalWorkoutsCounted = 0;
+
+        console.log('[Correlations] load() start', {
+          userId: user.uid,
+          daysQueried: days,
+          todayISO: today.toISOString(),
+        });
 
         for (let i = 0; i < days; i++) {
           const d = new Date(today);
           d.setDate(d.getDate() - i);
           const dateStr = d.toISOString().split('T')[0];
+          console.log(`[Correlations] Querying day ${i + 1}/${days}:`, dateStr);
           const [foods, workouts] = await Promise.all([
             userFoodService.getUserFoodsByDate(user.uid, dateStr),
             workoutService.getWorkoutsByDate(user.uid, dateStr)
           ]);
 
-          if (!workouts || workouts.length === 0) continue; // solo días con entrenamiento
+          console.log(`[Correlations] ${dateStr} -> results`, {
+            foodsCount: foods?.length ?? 0,
+            workoutsCount: workouts?.length ?? 0,
+            workoutsIds: (workouts || []).map(w => w.id),
+          });
+
+          if (!workouts || workouts.length === 0) {
+            filteredNoWorkoutDays++;
+            console.log(`[Correlations] ${dateStr} filtered out: no workouts for this day`);
+            continue; // solo días con entrenamiento
+          }
 
           const calories = foods.reduce((s, f) => s + (f.calories || 0), 0);
           const protein = Math.round(foods.reduce((s, f) => s + (f.protein || 0), 0));
@@ -57,10 +76,26 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
             : (w.preEnergyLevel !== undefined && w.preEnergyLevel !== null ? w.preEnergyLevel : 5)
           ), 0);
           const energyLevel = Math.round((((energySum / workouts.length) || 0) * 10)) / 10;
+          totalWorkoutsCounted += workouts.length;
+
+          console.log(`[Correlations] ${dateStr} point`, {
+            calories,
+            protein,
+            carbs,
+            fats,
+            performance,
+            energyLevel,
+            workoutsUsed: workouts.length,
+          });
 
           points.push({ date: dateStr, calories, protein, carbs, fats, performance, energyLevel, category: categorizeCalories(calories) });
         }
-
+        console.log('[Correlations] load() summary', {
+          daysQueried: days,
+          pointsGenerated: points.length,
+          filteredNoWorkoutDays,
+          totalWorkoutsCounted,
+        });
         setCorrelationData(points.reverse());
       } catch (e) {
         console.error('Error loading correlation data:', e);
@@ -103,6 +138,29 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
 
   return (
     <div className="space-y-6">
+      {/* fin del grid de stats (no hay cards de stats en este componente) */}
+
+      {correlationData.length > 0 && correlationData.length < 10 && (
+        <div className={`p-4 rounded-xl border ${
+          isDark 
+            ? 'bg-blue-900 bg-opacity-20 border-blue-700 text-blue-200' 
+            : 'bg-blue-50 border-blue-200 text-blue-700'
+        }`}>
+          <div className="flex items-start gap-3">
+            <TrendingUp size={20} className="flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium mb-1">
+                📊 Datos de correlación disponibles
+              </p>
+              <p className="text-xs opacity-90">
+                Mostrando {correlationData.length} días con entrenamientos de los últimos 30 días. 
+                Para análisis más precisos, intenta entrenar al menos 3-4 días por semana.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Scatter: Calorías vs Performance */}
       <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
         <div className="flex items-center space-x-2 mb-4">

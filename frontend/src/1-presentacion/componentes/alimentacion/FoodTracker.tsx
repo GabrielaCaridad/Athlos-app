@@ -1,7 +1,5 @@
-// FoodTracker: registra alimentos, totales diarios y estadísticas semanales.
-// Secciones: estados (usuario/búsqueda/formulario/estadísticas), efectos de carga, handlers y UI.
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Utensils, X, Save, Search, Trash2, Clock, TrendingUp, Target, Calendar } from 'lucide-react';
+import { Plus, Search, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { 
   foodDatabaseService, 
@@ -9,7 +7,7 @@ import {
   DatabaseFood, 
   UserFoodEntry 
 } from '../../../2-logica-negocio/servicios/foodDataService';
-// import { Timestamp } from 'firebase/firestore';
+import { usdaFoodService, AdaptedUSDAFood } from '../../../3-acceso-datos/apis-externas/usdaFoodAPI';
 
 interface FoodTrackerProps {
   isDark: boolean;
@@ -17,25 +15,52 @@ interface FoodTrackerProps {
 
 type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 
+const MEAL_CONFIG = {
+  breakfast: { label: 'Desayuno', emoji: '☀️' },
+  lunch: { label: 'Almuerzo', emoji: '🌤️' },
+  dinner: { label: 'Cena', emoji: '🌙' },
+  snack: { label: 'Snacks', emoji: '🍎' },
+} as const;
+
 export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const { user } = useAuth();
+  // Permitir decimales con coma o punto en los inputs
+  const parseDecimal = useCallback((v: string) => {
+    if (!v) return 0;
+    const normalized = v.replace(',', '.').trim();
+    const n = parseFloat(normalized);
+    return isNaN(n) ? 0 : n;
+  }, []);
   
   // Estados principales
   const [userFoods, setUserFoods] = useState<UserFoodEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [expandedMeals, setExpandedMeals] = useState<Record<MealType, boolean>>({
+    breakfast: true,
+    lunch: true,
+    dinner: true,
+    snack: true,
+  });
   
-  // Estados para la búsqueda de alimentos
+  // Estados para búsqueda
   const [searchTerm, setSearchTerm] = useState('');
   const [databaseFoods, setDatabaseFoods] = useState<DatabaseFood[]>([]);
-  // Selección directa ya no se usa con el carrito
+  const [usdaResults, setUsdaResults] = useState<AdaptedUSDAFood[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  
-  // Estados para el formulario
-  // Cantidad individual ya no se usa con el carrito
   const [selectedMealType, setSelectedMealType] = useState<MealType>('breakfast');
-  const [customFood, setCustomFood] = useState({
+  // Registro manual
+  const [showManual, setShowManual] = useState(false);
+  const [customFood, setCustomFood] = useState<{
+    name: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fats: number;
+    fiber: number;
+    serving: string;
+    category: DatabaseFood['category'];
+  }>({
     name: '',
     calories: 0,
     protein: 0,
@@ -43,178 +68,124 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     fats: 0,
     fiber: 0,
     serving: '',
-    category: 'other' as DatabaseFood['category']
+    category: 'other'
   });
-
-  // Carrito de alimentos (multi-add)
-  interface LocalCreateFood {
-    name: string;
-    calories: number;
-    protein?: number;
-    carbs?: number;
-    fats?: number;
-    fiber?: number;
-    serving: string;
-    category: DatabaseFood['category'];
-  }
+  
+  // Estados para carrito
   interface CartItem {
     id: string;
-    food: DatabaseFood | LocalCreateFood;
+    food: DatabaseFood | AdaptedUSDAFood;
     quantity: number;
     isFromDatabase: boolean;
+    fdcId?: number;
   }
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isProcessingCart, setIsProcessingCart] = useState(false);
-  const [cartError, setCartError] = useState<string | null>(null);
 
-  // Estados para estadísticas
-  const [weeklyStats, setWeeklyStats] = useState({
-    totalCalories: 0,
-    averageDaily: 0,
-    topFoods: [] as Array<{ name: string; count: number; calories: number }>
-  });
-
-  // Obtener la fecha actual y fechas relevantes
-  const today = new Date().toISOString().split('T')[0];
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-  // Inicializar base de datos en el primer uso
-  useEffect(() => {
-    const initializeDatabase = async () => {
-      try {
-        await foodDatabaseService.initializeDatabase();
-      } catch (error) {
-        console.error('Error initializing food database:', error);
-      }
-    };
-
-    if (user) {
-      initializeDatabase();
-    }
-  }, [user]);
-
-  // Cargar alimentos del día seleccionado
-  useEffect(() => {
-    const loadUserFoods = async () => {
-      if (!user) {
-        setUserFoods([]);
-        setIsLoading(false);
-        return;
-      }
-
-      try {
-        setIsLoading(true);
-        const foods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
-        setUserFoods(foods);
-        
-        // Cargar estadísticas semanales
-        const stats = await userFoodService.getNutritionStats(user.uid, weekAgo, today);
-        setWeeklyStats(stats);
-      } catch (error) {
-        console.error('Error loading user foods:', error);
-        setUserFoods([]);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadUserFoods();
-  }, [user, selectedDate, today, weekAgo]);
-
-  // Buscar alimentos en la base de datos
-  
-
-  const handleSearchDatabaseFoods = useCallback(async (searchValue?: string) => {
-    const term = searchValue || searchTerm;
-    if (!term.trim()) {
-      try {
-        setIsSearching(true);
-        const popular = await foodDatabaseService.searchFoods('', 20);
-        setDatabaseFoods(popular);
-      } catch (error) {
-        console.error('Error loading popular foods:', error);
-      } finally {
-        setIsSearching(false);
-      }
-      return;
-    }
-
-    try {
-      setIsSearching(true);
-      const results = await foodDatabaseService.searchFoods(term, 20);
-      setDatabaseFoods(results);
-    } catch (error) {
-      console.error('Error searching database foods:', error);
-      setDatabaseFoods([]);
-    } finally {
-      setIsSearching(false);
-    }
-  }, [searchTerm]);
-
-  // Cargar alimentos populares al abrir el modal
-  useEffect(() => {
-    if (isModalOpen && databaseFoods.length === 0) {
-      handleSearchDatabaseFoods('');
-    }
-  }, [isModalOpen, databaseFoods.length, handleSearchDatabaseFoods]);
-
-  // Buscar automáticamente mientras el usuario escribe
-  useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      if (isModalOpen) {
-        handleSearchDatabaseFoods();
-      }
-    }, 300);
-
-    return () => clearTimeout(timeoutId);
-  }, [searchTerm, isModalOpen, handleSearchDatabaseFoods]);
-
+  // Totales del día
   const totalCalories = userFoods.reduce((sum, food) => sum + food.calories, 0);
   const totalProtein = Math.round(userFoods.reduce((sum, f) => sum + (f.protein || 0), 0));
   const totalCarbs = Math.round(userFoods.reduce((sum, f) => sum + (f.carbs || 0), 0));
   const totalFats = Math.round(userFoods.reduce((sum, f) => sum + (f.fats || 0), 0));
 
-  // Nota: selección directa ya no es necesaria con carrito; conservamos utilidades de formulario manual.
+  const today = new Date().toISOString().split('T')[0];
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-  // Guardado individual ya no se usa con carrito (se preserva comportamiento mediante handleSaveAllFromCart)
+  useEffect(() => {
+    const loadData = async () => {
+      if (!user) {
+        setUserFoods([]);
+        return;
+      }
+      try {
+        const foods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
+        setUserFoods(foods);
+        // Prefetch semanal silencioso (no usado directamente aquí)
+        userFoodService.getNutritionStats(user.uid, weekAgo, today).catch(() => {});
+      } catch (error) {
+        console.error('Error loading foods:', error);
+        setUserFoods([]);
+      }
+    };
+    loadData();
+  }, [user, selectedDate, today, weekAgo]);
 
-  // --- Carrito: agregar, actualizar, eliminar, guardar ---
-  const handleAddToCart = (food: DatabaseFood | LocalCreateFood, isFromDatabase: boolean) => {
+  // Búsqueda
+  const handleSearch = useCallback(async (term?: string) => {
+    const searchValue = (term ?? searchTerm).trim();
+    if (!searchValue) {
+      setDatabaseFoods([]);
+      setUsdaResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const [localResults, usdaFoods] = await Promise.all([
+        foodDatabaseService.searchFoods(searchValue, 10),
+        usdaFoodService.isConfigured() ? usdaFoodService.searchFoods(searchValue, 10) : Promise.resolve([])
+      ]);
+      setDatabaseFoods(localResults);
+      setUsdaResults(usdaFoods);
+    } catch (error) {
+      console.error('Error searching:', error);
+      setDatabaseFoods([]);
+      setUsdaResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [searchTerm]);
+
+  // Carrito
+  const handleAddToCart = (food: DatabaseFood | AdaptedUSDAFood, isFromDatabase: boolean, fdcId?: number) => {
     const cartItem: CartItem = {
       id: `cart_${Date.now()}_${Math.random()}`,
-      food,
+      food: { ...food, fdcId } as any,
       quantity: 1,
-      isFromDatabase
+      isFromDatabase,
+      fdcId
     };
     setCart((prev) => [...prev, cartItem]);
   };
 
-  const handleUpdateCartQuantity = (itemId: string, newQuantity: number) => {
+  const updateCartQuantity = (itemId: string, newQuantity: number) => {
     if (newQuantity < 0.1) return;
-    const q = Math.round(newQuantity * 10) / 10;
-    setCart((prev) => prev.map((it) => (it.id === itemId ? { ...it, quantity: q } : it)));
+    setCart((prev) => prev.map((it) => (it.id === itemId ? { ...it, quantity: Math.round(newQuantity * 10) / 10 } : it)));
   };
 
-  const handleRemoveFromCart = (itemId: string) => {
+  const removeFromCart = (itemId: string) => {
     setCart((prev) => prev.filter((it) => it.id !== itemId));
   };
 
-  const handleSaveAllFromCart = async () => {
+  const saveCart = async () => {
     if (!user || cart.length === 0) return;
     try {
       setIsProcessingCart(true);
-      setCartError(null);
-      const savePromises = cart.map(async (item) => {
-        const base = item.food;
-        const foodData = {
+      await Promise.all(cart.map(async (item) => {
+        const base = item.food as any;
+        const foodData: {
+          name: string;
+          calories: number;
+          protein?: number;
+          carbs?: number;
+          fats?: number;
+          fiber?: number;
+          serving: string;
+          category: DatabaseFood['category'];
+          source?: 'USDA' | 'custom';
+          fdcId?: number;
+          alternativeNames: string[];
+        } = {
           name: base.name,
-          calories: (base as DatabaseFood | LocalCreateFood).calories ?? 0,
-          protein: (base as DatabaseFood | LocalCreateFood).protein,
-          carbs: (base as DatabaseFood | LocalCreateFood).carbs,
-          fats: (base as DatabaseFood | LocalCreateFood).fats,
-          fiber: (base as DatabaseFood | LocalCreateFood).fiber,
+          calories: base.calories,
+          protein: base.protein,
+          carbs: base.carbs,
+          fats: base.fats,
+          fiber: base.fiber,
           serving: base.serving,
           category: base.category || 'other',
+          source: (base.fdcId ? 'USDA' : 'custom') as 'USDA' | 'custom',
+          fdcId: base.fdcId,
           alternativeNames: [] as string[]
         };
         return userFoodService.addUserFoodEntry(
@@ -224,623 +195,470 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
           item.quantity,
           selectedMealType
         );
-      });
-      await Promise.all(savePromises);
-      // Recargar alimentos y stats
+      }));
+
       const updatedFoods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
       setUserFoods(updatedFoods);
-      const stats = await userFoodService.getNutritionStats(user.uid, weekAgo, today);
-      setWeeklyStats(stats);
-      // Limpieza y cerrar
       setCart([]);
       setIsModalOpen(false);
       setSearchTerm('');
+      setDatabaseFoods([]);
+      setUsdaResults([]);
     } catch (err) {
-      console.error('Error saving foods from cart:', err);
-      setCartError('No se pudieron guardar los alimentos');
+      console.error('Error saving cart:', err);
     } finally {
       setIsProcessingCart(false);
     }
   };
 
-  const handleDeleteFood = async (entryId: string) => {
+  const deleteFood = async (entryId: string) => {
     if (!user) return;
-
     try {
       await userFoodService.deleteUserFoodEntry(entryId);
       setUserFoods(userFoods.filter(food => food.id !== entryId));
-      
-      // Recargar estadísticas
-      const stats = await userFoodService.getNutritionStats(user.uid, weekAgo, today);
-      setWeeklyStats(stats);
     } catch (error) {
       console.error('Error deleting food:', error);
     }
   };
 
-  const resetModal = () => {
-  setIsModalOpen(false);
-  setSearchTerm('');
-  setSelectedMealType('breakfast'); 
-  setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
-};
-
-  const getMealTypeLabel = (mealType: MealType) => {
-    const labels = {
-      breakfast: 'Desayuno',
-      lunch: 'Almuerzo',
-      dinner: 'Cena',
-      snack: 'Merienda'
-    };
-    return labels[mealType];
-  };
-
-  const getFoodsByMealType = (mealType: MealType) => {
-  return userFoods.filter(food => food.mealType === mealType);
-};
-
-const getCaloriesByMealType = (mealType: MealType) => {
-  return getFoodsByMealType(mealType).reduce((sum, food) => sum + food.calories, 0);
-};
+  const getFoodsByMeal = (mealType: MealType) => userFoods.filter(food => food.mealType === mealType);
+  const getCaloriesByMeal = (mealType: MealType) => getFoodsByMeal(mealType).reduce((sum, food) => sum + food.calories, 0);
 
   return (
-    <div className="space-y-6">
-      {/* Header con estadísticas */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-          <div className="flex items-center gap-3">
-            <Target className="text-blue-500" size={20} />
+    <div className="max-w-5xl mx-auto">
+      {/* Header Compacto con KPIs */}
+      <div className={`sticky top-0 z-10 backdrop-blur-xl border-b ${
+        isDark ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'
+      }`}>
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
             <div>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Hoy</p>
-              <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                {totalCalories} kcal
-              </p>
+              <h1 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Nutrición</h1>
+              <p className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>{totalCalories} / 2200 kcal</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className={`px-4 py-2 rounded-xl border-none text-sm font-medium ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+              />
             </div>
           </div>
-        </div>
 
-        <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-          <div className="flex items-center gap-3">
-            <TrendingUp className="text-green-500" size={20} />
-            <div>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Promedio Semanal</p>
-              <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                {weeklyStats.averageDaily} kcal
-              </p>
+          {/* Macros Bar Minimalista */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className={`text-center p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+              <div className={`text-sm font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Proteína</div>
+              <div className={`text-xl font-bold mt-1 ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{totalProtein}g</div>
             </div>
-          </div>
-        </div>
-
-        <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-          <div className="flex items-center gap-3">
-            <Clock className="text-orange-500" size={20} />
-            <div>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Total Semanal</p>
-              <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                {weeklyStats.totalCalories} kcal
-              </p>
+            <div className={`text-center p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+              <div className={`text-sm font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Carbohidratos</div>
+              <div className={`text-xl font-bold mt-1 ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>{totalCarbs}g</div>
             </div>
-          </div>
-        </div>
-
-        <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-          <div className="flex items-center gap-3">
-            <Utensils className="text-purple-500" size={20} />
-            <div>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Alimentos Hoy</p>
-              <p className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                {userFoods.length}
-              </p>
+            <div className={`text-center p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+              <div className={`text-sm font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Grasas</div>
+              <div className={`text-xl font-bold mt-1 ${isDark ? 'text-orange-400' : 'text-orange-600'}`}>{totalFats}g</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Resumen diario de macronutrientes */}
-      <div className={`p-4 rounded-xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Macros de hoy:</span>
-          <span className={`${isDark ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-700'} px-3 py-1 rounded-full text-xs font-medium`}>Proteína: {totalProtein} g</span>
-          <span className={`${isDark ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-700'} px-3 py-1 rounded-full text-xs font-medium`}>Carbohidratos: {totalCarbs} g</span>
-          <span className={`${isDark ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-700'} px-3 py-1 rounded-full text-xs font-medium`}>Grasas: {totalFats} g</span>
-        </div>
-      </div>
-
-      {/* Selector de fecha */}
-      <div className="flex justify-between items-center">
-        <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-          Registro de Alimentos
-        </h2>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Calendar size={18} className={isDark ? 'text-gray-400' : 'text-gray-500'} />
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className={`px-3 py-2 rounded-lg border-none outline-none text-sm ${
-                isDark
-                  ? 'bg-gray-800 text-white shadow-dark-neumorph'
-                  : 'bg-white text-gray-800 shadow-neumorph'
-              }`}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Botón para agregar alimento */}
-      <button
-        onClick={() => setIsModalOpen(true)}
-        className={`w-full p-4 rounded-2xl flex items-center justify-center space-x-3 transition-all ${
-          isDark
-            ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-dark-neumorph'
-            : 'bg-purple-500 hover:bg-purple-600 text-white shadow-neumorph'
-        }`}
-      >
-        <Plus size={20} />
-        <span className="font-medium">Registrar Alimento</span>
-      </button>
-
-      {/* Alimentos por tipo de comida */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mealType) => (
-          <div key={mealType} className={`p-6 rounded-2xl ${
-            isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
-          }`}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                {getMealTypeLabel(mealType)}
-              </h3>
-              <span className={`text-sm font-medium px-3 py-1 rounded-full ${
-                isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'
-              }`}>
-                {getCaloriesByMealType(mealType)} kcal
-              </span>
-            </div>
-            
-            <div className="space-y-2">
-              {getFoodsByMealType(mealType).length > 0 ? (
-                getFoodsByMealType(mealType).map((food) => (
-                  <div key={food.id} className={`flex justify-between items-center p-3 rounded-lg ${
-                    isDark ? 'bg-gray-700' : 'bg-gray-50'
-                  }`}>
-                    <div className="flex-1">
-                      <span className={`font-medium text-sm ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                        {food.name}
-                      </span>
-                      <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {food.serving} {food.quantity > 1 && `× ${food.quantity}`}
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <span className={`text-xs font-semibold px-2 py-1 rounded-full ${
-                        isDark ? 'bg-gray-600 text-gray-200' : 'bg-gray-200 text-gray-700'
-                      }`}>
-                        {food.calories} kcal
-                      </span>
-                      {(food.protein || food.carbs || food.fats) && (
-                        <div className="flex gap-1 text-xs">
-                          {food.protein ? (
-                            <span className={`${isDark ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-700'} px-1.5 py-0.5 rounded`}>P: {Math.round(food.protein)}g</span>
-                          ) : null}
-                          {food.carbs ? (
-                            <span className={`${isDark ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-700'} px-1.5 py-0.5 rounded`}>C: {Math.round(food.carbs)}g</span>
-                          ) : null}
-                          {food.fats ? (
-                            <span className={`${isDark ? 'bg-orange-900 text-orange-200' : 'bg-orange-100 text-orange-700'} px-1.5 py-0.5 rounded`}>G: {Math.round(food.fats)}g</span>
-                          ) : null}
-                        </div>
-                      )}
-                      <button
-                        onClick={() => handleDeleteFood(food.id!)}
-                        className={`p-1 rounded transition-colors ${
-                          isDark
-                            ? 'text-gray-400 hover:text-red-400 hover:bg-gray-600'
-                            : 'text-gray-500 hover:text-red-500 hover:bg-gray-200'
-                        }`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+      {/* Listado de Comidas - Formato Tabla */}
+      <div className="p-6 space-y-4">
+        {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mealType) => {
+          const config = MEAL_CONFIG[mealType];
+          const foods = getFoodsByMeal(mealType);
+          const calories = getCaloriesByMeal(mealType);
+          const isExpanded = expandedMeals[mealType];
+          
+          return (
+            <div key={mealType} className={`rounded-2xl overflow-hidden ${isDark ? 'bg-gray-800' : 'bg-white border border-gray-200'}`}>
+              {/* Header de Comida */}
+              <button
+                onClick={() => setExpandedMeals(prev => ({ ...prev, [mealType]: !prev[mealType] }))}
+                className={`w-full px-6 py-4 flex items-center justify-between transition-colors ${isDark ? 'hover:bg-gray-750' : 'hover:bg-gray-50'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{config.emoji}</span>
+                  <div className="text-left">
+                    <div className={`font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{config.label}</div>
+                    <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>{foods.length} {foods.length === 1 ? 'alimento' : 'alimentos'} • {calories} kcal</div>
                   </div>
-                ))
-              ) : (
-                <p className={`text-center py-4 text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-                  No hay alimentos registrados para {getMealTypeLabel(mealType).toLowerCase()}
-                </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className={`text-lg font-bold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{calories}</span>
+                  {isExpanded ? (
+                    <ChevronUp size={20} className={isDark ? 'text-gray-400' : 'text-gray-500'} />
+                  ) : (
+                    <ChevronDown size={20} className={isDark ? 'text-gray-400' : 'text-gray-500'} />
+                  )}
+                </div>
+              </button>
+
+              {/* Tabla de Alimentos */}
+              {isExpanded && foods.length > 0 && (
+                <div className={`border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                  <table className="w-full">
+                    <thead>
+                      <tr className={`text-xs ${isDark ? 'bg-gray-750 text-gray-400' : 'bg-gray-50 text-gray-600'}`}>
+                        <th className="text-left px-6 py-3 font-medium">Alimento</th>
+                        <th className="text-center px-4 py-3 font-medium">Cantidad</th>
+                        <th className="text-right px-4 py-3 font-medium">P</th>
+                        <th className="text-right px-4 py-3 font-medium">C</th>
+                        <th className="text-right px-4 py-3 font-medium">G</th>
+                        <th className="text-right px-6 py-3 font-medium">Kcal</th>
+                        <th className="w-12"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {foods.map((food) => (
+                        <tr key={food.id} className={`border-t transition-colors ${isDark ? 'border-gray-700 hover:bg-gray-750' : 'border-gray-100 hover:bg-gray-50'}`}>
+                          <td className="px-6 py-3">
+                            <div className={`font-medium text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{food.name}</div>
+                            <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>{food.serving}</div>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{food.quantity}×</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <span className={`text-sm font-medium ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{Math.round(food.protein || 0)}</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <span className={`text-sm font-medium ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>{Math.round(food.carbs || 0)}</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <span className={`text-sm font-medium ${isDark ? 'text-orange-400' : 'text-orange-600'}`}>{Math.round(food.fats || 0)}</span>
+                          </td>
+                          <td className="px-6 py-3 text-right">
+                            <span className={`font-bold text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{food.calories}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <button
+                              onClick={() => deleteFood(food.id!)}
+                              className={`p-2 rounded-lg transition-colors ${isDark ? 'hover:bg-red-900/30 text-gray-400 hover:text-red-400' : 'hover:bg-red-50 text-gray-500 hover:text-red-600'}`}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Empty State */}
+              {isExpanded && foods.length === 0 && (
+                <div className={`px-6 py-8 text-center border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                  <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>No hay alimentos registrados</p>
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Resumen diario */}
-      {userFoods.length > 0 && !isLoading && (
-        <div className={`p-6 rounded-2xl ${
-          isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
-        }`}>
-          <h3 className={`text-lg font-semibold mb-4 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            Resumen del Día
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mealType) => (
-              <div key={mealType} className="text-center">
-                <div className={`text-2xl font-bold ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>
-                  {getCaloriesByMealType(mealType)}
-                </div>
-                <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                  {getMealTypeLabel(mealType)}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className={`mt-4 pt-4 border-t ${isDark ? 'border-gray-600' : 'border-gray-200'}`}>
-            <div className="flex justify-between items-center">
-              <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                Total del día:
-              </span>
-              <span className={`font-bold text-xl ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>
-                {totalCalories} kcal
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Botón Flotante para Agregar */}
+      <button
+        onClick={() => setIsModalOpen(true)}
+        className={`fixed z-40 w-16 h-16 rounded-full shadow-2xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 
+          bottom-24 right-5 md:bottom-8 md:right-28 
+          ${isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'}`}
+      >
+        <Plus size={28} className="text-white" />
+      </button>
 
-      {/* Modal para registrar alimento */}
+      {/* Modal Full-Screen para Agregar */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className={`w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 rounded-2xl ${
-            isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
-          }`}>
-            <div className="flex justify-between items-center mb-6">
-              <h3 className={`text-xl font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                Registrar Alimento
-              </h3>
-              <button
-                onClick={resetModal}
-                className={`p-2 rounded-lg transition-all ${
-                  isDark
-                    ? 'hover:bg-gray-700 text-gray-400 hover:text-white'
-                    : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <X size={20} />
-              </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className={`w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-3xl ${isDark ? 'bg-gray-900' : 'bg-white'} flex flex-col`}>
+            {/* Header del Modal */}
+            <div className={`px-8 py-6 border-b ${isDark ? 'border-gray-800' : 'border-gray-200'}`}>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Agregar Alimento</h2>
+                <button
+                  onClick={() => {
+                    setIsModalOpen(false);
+                    setCart([]);
+                    setSearchTerm('');
+                    setDatabaseFoods([]);
+                    setUsdaResults([]);
+                  }}
+                  className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              {/* Selector de Comida */}
+              <div className="grid grid-cols-4 gap-2">
+                {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((meal) => (
+                  <button
+                    key={meal}
+                    onClick={() => setSelectedMealType(meal)}
+                    className={`p-3 rounded-xl text-sm font-medium transition-all ${
+                      selectedMealType === meal
+                        ? isDark
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-purple-500 text-white'
+                        : isDark
+                        ? 'bg-gray-800 text-gray-300 hover:bg-gray-750'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {MEAL_CONFIG[meal].emoji} {MEAL_CONFIG[meal].label}
+                  </button>
+                ))}
+              </div>
             </div>
-            
-            <div className="space-y-6">
-              {/* Tipo de comida */}
-              <div>
-                <label className={`block text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  Tipo de comida:
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mealType) => (
+
+            {/* Búsqueda */}
+            <div className={`px-8 py-6 border-b ${isDark ? 'border-gray-800' : 'border-gray-200'} flex flex-col`}>
+              <div className="relative">
+                <Search className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} size={20} />
+                <input
+                  type="text"
+                  placeholder="Buscar alimento..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    if (e.target.value.length >= 2) {
+                      handleSearch(e.target.value);
+                    }
+                  }}
+                  className={`w-full pl-12 pr-4 py-4 rounded-xl border-none text-lg ${isDark ? 'bg-gray-800 text-white placeholder-gray-500' : 'bg-gray-100 text-gray-900 placeholder-gray-400'}`}
+                />
+              </div>
+            </div>
+
+            {/* Contenido scrollable: resultados + registro manual */}
+            <div className={`flex-1 overflow-y-auto ${cart.length > 0 ? 'pb-40' : 'pb-6'}`}>
+              {/* Resultados */}
+              <div className="px-8 py-6">
+              {isSearching ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full" />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {/* USDA Results */}
+                  {usdaResults.map((food) => (
                     <button
-                      key={mealType}
-                      type="button"
-                      onClick={() => setSelectedMealType(mealType)}
-                      className={`p-2 rounded-lg text-sm font-medium transition-all ${
-                        selectedMealType === mealType
-                          ? isDark
-                            ? 'bg-purple-600 text-white'
-                            : 'bg-purple-500 text-white'
-                          : isDark
-                          ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                          : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                      }`}
+                      key={food.id}
+                      onClick={() => handleAddToCart(food, false, parseInt(food.id.replace('usda_', '')))}
+                      className={`w-full p-4 rounded-xl text-left transition-all ${isDark ? 'bg-gray-800 hover:bg-gray-750' : 'bg-gray-50 hover:bg-gray-100'}`}
                     >
-                      {getMealTypeLabel(mealType)}
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{food.name}</span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-green-500 text-white font-medium">USDA</span>
+                          </div>
+                          <div className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {food.calories} kcal • P: {food.protein}g • C: {food.carbs}g • G: {food.fats}g
+                          </div>
+                        </div>
+                        <Plus size={20} className={isDark ? 'text-gray-400' : 'text-gray-500'} />
+                      </div>
+                    </button>
+                  ))}
+
+                  {/* Local Results */}
+                  {databaseFoods.map((food) => (
+                    <button
+                      key={food.id}
+                      onClick={() => handleAddToCart(food, true)}
+                      className={`w-full p-4 rounded-xl text-left transition-all ${isDark ? 'bg-gray-800 hover:bg-gray-750' : 'bg-gray-50 hover:bg-gray-100'}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{food.name}</span>
+                          <div className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>{food.calories} kcal • {food.serving}</div>
+                        </div>
+                        <Plus size={20} className={isDark ? 'text-gray-400' : 'text-gray-500'} />
+                      </div>
                     </button>
                   ))}
                 </div>
+              )}
               </div>
 
-              {/* Búsqueda de alimentos */}
-              <div className="relative">
-                <Search size={18} className={`absolute left-3 top-1/2 transform -translate-y-1/2 ${
-                  isDark ? 'text-gray-400' : 'text-gray-500'
-                }`} />
-                <input
-                  type="text"
-                  placeholder="Buscar alimento en la base de datos..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className={`w-full pl-10 pr-4 py-3 rounded-lg border-none outline-none ${
-                    isDark
-                      ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph'
-                      : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
-                  }`}
-                />
-              </div>
-
-              {/* Lista de alimentos de la base de datos */}
-              <div>
-                <label className={`block text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  {searchTerm ? 'Resultados de búsqueda:' : 'Alimentos populares:'}
-                </label>
-                <div className="grid grid-cols-1 gap-2 max-h-64 overflow-y-auto">
-                  {isSearching ? (
-                    <div className="text-center py-8">
-                      <div className={`inline-block animate-spin rounded-full h-6 w-6 border-b-2 ${
-                        isDark ? 'border-purple-400' : 'border-purple-600'
-                      }`}></div>
-                      <p className={`mt-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                        Buscando...
-                      </p>
+              {/* Registro manual */}
+              <div className="px-8 pb-4">
+              <button
+                onClick={() => setShowManual(v => !v)}
+                className={`w-full text-left px-4 py-3 rounded-xl transition-colors font-medium ${isDark ? 'bg-gray-800 hover:bg-gray-750 text-gray-200' : 'bg-gray-100 hover:bg-gray-200 text-gray-800'}`}
+              >
+                {showManual ? '▼' : '►'} Añadir manualmente
+              </button>
+              {showManual && (
+                <div className="mt-4 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input
+                      type="text"
+                      placeholder="Nombre del alimento"
+                      value={customFood.name}
+                      onChange={(e) => setCustomFood({ ...customFood, name: e.target.value })}
+                      className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white placeholder-gray-500' : 'bg-gray-100 text-gray-900 placeholder-gray-500'}`}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Porción (ej: 1 taza, 100 g)"
+                      value={customFood.serving}
+                      onChange={(e) => setCustomFood({ ...customFood, serving: e.target.value })}
+                      className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white placeholder-gray-500' : 'bg-gray-100 text-gray-900 placeholder-gray-500'}`}
+                    />
+                  </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        placeholder="Calorías"
+                        value={customFood.calories || ''}
+                        onChange={(e) => setCustomFood({ ...customFood, calories: parseDecimal(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        placeholder="Proteína (g, ej: 0,5)"
+                        value={customFood.protein || ''}
+                        onChange={(e) => setCustomFood({ ...customFood, protein: parseDecimal(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        placeholder="Carbohidratos (g, ej: 12,3)"
+                        value={customFood.carbs || ''}
+                        onChange={(e) => setCustomFood({ ...customFood, carbs: parseDecimal(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        placeholder="Grasas (g)"
+                        value={customFood.fats || ''}
+                        onChange={(e) => setCustomFood({ ...customFood, fats: parseDecimal(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        placeholder="Fibra (g)"
+                        value={customFood.fiber || ''}
+                        onChange={(e) => setCustomFood({ ...customFood, fiber: parseDecimal(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                      />
                     </div>
-                  ) : databaseFoods.length > 0 ? (
-                    databaseFoods.map((food) => (
-                      <div
-                        key={food.id}
-                        className={`p-3 rounded-lg text-left transition-all ${
-                          isDark ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                        }`}
-                      >
-                        <div className="flex justify-between items-center gap-3">
-                          <div className="flex-1">
-                            <span className="text-sm font-medium">{food.name}</span>
-                            <div className="text-xs opacity-75 mt-1">
-                              {food.serving} • {food.category}
-                            </div>
-                            {food.isVerified && (
-                              <div className="text-xs text-green-500 mt-1">✓ Verificado USDA</div>
-                            )}
-                            {food.usageCount > 0 && (
-                              <div className="text-xs opacity-75 mt-1">
-                                Usado {food.usageCount} veces
-                              </div>
-                            )}
+                  <div>
+                    <select
+                      value={customFood.category}
+                      onChange={(e) => setCustomFood({ ...customFood, category: e.target.value as DatabaseFood['category'] })}
+                      className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                    >
+                      <option value="other">Otro</option>
+                      <option value="fruits">Frutas</option>
+                      <option value="vegetables">Vegetales</option>
+                      <option value="grains">Granos</option>
+                      <option value="proteins">Proteínas</option>
+                      <option value="dairy">Lácteos</option>
+                      <option value="prepared">Comida preparada</option>
+                      <option value="beverages">Bebidas</option>
+                      <option value="snacks">Snacks</option>
+                    </select>
+                  </div>
+                  {(customFood.protein || customFood.carbs || customFood.fats) ? (
+                    <div className={`text-xs px-3 py-2 rounded ${isDark ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                      {(() => {
+                        const calc = Math.round((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9));
+                        const diff = Math.abs((customFood.calories || 0) - calc);
+                        return (
+                          <div className="flex justify-between">
+                            <span>Calorías calculadas por macros: <strong>{calc} kcal</strong></span>
+                            <span className={diff > 20 ? 'text-yellow-500' : 'text-green-500'}>
+                              {diff > 20 ? `Diferencia ${diff} kcal` : 'Coherente'}
+                            </span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs">{food.calories} kcal</span>
-                            <button
-                              type="button"
-                              onClick={() => handleAddToCart({ ...food }, true)}
-                              className={`${isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'} text-white px-3 py-1 rounded text-xs`}
-                            >
-                              + Agregar
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {searchTerm ? 'No se encontraron alimentos. Puedes agregarlo manualmente abajo.' : 'Cargando alimentos...'}
-                      </p>
+                        );
+                      })()}
                     </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Carrito temporal */}
-              {cart.length > 0 && (
-                <div className={`mt-2 p-4 rounded-xl border-2 ${isDark ? 'border-purple-600 bg-purple-900 bg-opacity-20' : 'border-purple-400 bg-purple-50'}`}>
-                  <div className="flex justify-between items-center mb-3">
-                    <h4 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                      Carrito ({cart.length} {cart.length === 1 ? 'alimento' : 'alimentos'})
-                    </h4>
-                    <button onClick={() => setCart([])} className={`text-xs ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}>
-                      Vaciar
+                  ) : null}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' })}
+                      className={`flex-1 px-4 py-3 rounded-lg ${isDark ? 'bg-gray-800 text-gray-300 hover:bg-gray-750' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    >
+                      Limpiar
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!customFood.name.trim() || !customFood.serving.trim() || customFood.calories <= 0) return;
+                        const toAdd = { ...customFood } as any;
+                        handleAddToCart(toAdd, false);
+                        setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
+                      }}
+                      className={`flex-1 px-4 py-3 rounded-lg text-white ${isDark ? 'bg-green-600 hover:bg-green-700' : 'bg-green-500 hover:bg-green-600'}`}
+                    >
+                      Agregar al carrito
                     </button>
                   </div>
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                </div>
+              )}
+              </div>
+            </div>
+
+            {/* Cart Footer */}
+            {cart.length > 0 && (
+              <div className={`px-8 py-6 border-t ${isDark ? 'border-gray-800 bg-gray-800/50' : 'border-gray-200 bg-gray-50'}`}>
+                <div className="mb-4">
+                  <p className={`text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Carrito ({cart.length})</p>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
                     {cart.map((item) => (
-                      <div key={item.id} className={`flex items-center justify-between p-2 rounded-lg ${isDark ? 'bg-gray-700' : 'bg-white'}`}>
-                        <div className="flex-1">
-                          <p className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>{item.food.name}</p>
-                          <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                            {('calories' in item.food ? (item.food as DatabaseFood).calories : (item.food as LocalCreateFood).calories)} kcal × {item.quantity}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => handleUpdateCartQuantity(item.id, item.quantity - 0.5)} disabled={item.quantity <= 0.5} className={`w-6 h-6 rounded flex items-center justify-center ${isDark ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'} disabled:opacity-30`}>-</button>
-                          <input type="number" min="0.1" step="0.5" value={item.quantity} onChange={(e) => handleUpdateCartQuantity(item.id, parseFloat(e.target.value) || 0.5)} className={`w-16 text-center px-2 py-1 rounded text-sm ${isDark ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-800'}`} />
-                          <button onClick={() => handleUpdateCartQuantity(item.id, item.quantity + 0.5)} className={`w-6 h-6 rounded flex items-center justify-center ${isDark ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'}`}>+</button>
-                          <button onClick={() => handleRemoveFromCart(item.id)} className={`ml-2 p-1 rounded ${isDark ? 'text-red-400 hover:bg-red-900' : 'text-red-500 hover:bg-red-50'}`}><Trash2 size={14} /></button>
-                        </div>
+                      <div key={item.id} className={`flex items-center gap-3 p-2 rounded-lg ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+                        <span className={`flex-1 text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.food.name}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          pattern="[0-9]*[.,]?[0-9]*"
+                          value={String(item.quantity)}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(',', '.');
+                            const num = parseFloat(val);
+                            updateCartQuantity(item.id, isNaN(num) ? 0.1 : num);
+                          }}
+                          className={`w-24 px-2 py-1 text-center rounded ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
+                        />
+                        <button
+                          onClick={() => removeFromCart(item.id)}
+                          className={`p-1 rounded transition-colors ${isDark ? 'hover:bg-red-900/30 text-gray-400' : 'hover:bg-red-50 text-gray-500'}`}
+                        >
+                          <X size={16} />
+                        </button>
                       </div>
                     ))}
                   </div>
-                  <div className={`mt-3 pt-3 border-t ${isDark ? 'border-gray-600' : 'border-gray-200'}`}>
-                    <div className="flex justify-between text-sm">
-                      <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>Total:</span>
-                      <span className={`font-bold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
-                        {cart.reduce((sum, item) => {
-                          const c = 'calories' in item.food ? (item.food as DatabaseFood).calories : (item.food as LocalCreateFood).calories;
-                          return sum + c * item.quantity;
-                        }, 0)} kcal
-                      </span>
-                    </div>
-                  </div>
                 </div>
-              )}
-
-              {cartError && (
-                <div className={`p-3 rounded-lg text-sm ${isDark ? 'bg-red-900 text-red-200' : 'bg-red-50 text-red-700'}`}>
-                  {cartError}
-                </div>
-              )}
-
-              {/* Entrada manual */}
-              <div className="space-y-4">
-                <div className={`h-px ${isDark ? 'bg-gray-600' : 'bg-gray-200'}`} />
-                <label className={`block text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  O ingresa manualmente:
-                </label>
                 
-                <input
-                  type="text"
-                  placeholder="Nombre del alimento"
-                  value={customFood.name}
-                  onChange={(e) => setCustomFood({ ...customFood, name: e.target.value })}
-                  className={`w-full px-4 py-3 rounded-lg border-none outline-none ${
-                    isDark
-                      ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph'
-                      : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
-                  }`}
-                />
-
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="number"
-                    placeholder="Calorías"
-                    value={customFood.calories || ''}
-                    onChange={(e) => setCustomFood({ ...customFood, calories: parseInt(e.target.value) || 0 })}
-                    className={`px-4 py-3 rounded-lg border-none outline-none ${
-                      isDark
-                        ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph'
-                        : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
-                    }`}
-                  />
-                  <input
-                    type="text"
-                    placeholder="Porción (ej: 1 taza)"
-                    value={customFood.serving}
-                    onChange={(e) => setCustomFood({ ...customFood, serving: e.target.value })}
-                    className={`px-4 py-3 rounded-lg border-none outline-none ${
-                      isDark
-                        ? 'bg-gray-700 text-white placeholder-gray-400 shadow-dark-neumorph'
-                        : 'bg-gray-50 text-gray-800 placeholder-gray-500 shadow-neumorph'
-                    }`}
-                  />
-                </div>
-
-                {/* Macros */}
-                <div>
-                  <h4 className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                    Información Nutricional
-                  </h4>
-                  <div className="grid grid-cols-3 gap-3 mt-2">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="Proteína (g)"
-                      value={customFood.protein || ''}
-                      onChange={(e) => setCustomFood({ ...customFood, protein: parseFloat(e.target.value) || 0 })}
-                      className={`px-4 py-3 rounded-lg border-none outline-none ${
-                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
-                      }`}
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="Carbohidratos (g)"
-                      value={customFood.carbs || ''}
-                      onChange={(e) => setCustomFood({ ...customFood, carbs: parseFloat(e.target.value) || 0 })}
-                      className={`px-4 py-3 rounded-lg border-none outline-none ${
-                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
-                      }`}
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="Grasas (g)"
-                      value={customFood.fats || ''}
-                      onChange={(e) => setCustomFood({ ...customFood, fats: parseFloat(e.target.value) || 0 })}
-                      className={`px-4 py-3 rounded-lg border-none outline-none ${
-                        isDark ? 'bg-gray-700 text-white' : 'bg-gray-50 text-gray-800'
-                      }`}
-                    />
-                  </div>
-                  {customFood.protein > 0 && customFood.carbs > 0 && customFood.fats > 0 && (
-                    <div className={`text-xs p-2 mt-2 rounded ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      <div className="flex justify-between items-center">
-                        <span className={isDark ? 'text-gray-400' : 'text-gray-600'}>
-                          Calorías calculadas:
-                        </span>
-                        <span className={`font-mono ${
-                          Math.abs(customFood.calories - ((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))) > 20
-                            ? 'text-yellow-500'
-                            : 'text-green-500'
-                        }`}>
-                          {Math.round((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))} kcal
-                        </span>
-                      </div>
-                      {Math.abs(customFood.calories - ((customFood.protein * 4) + (customFood.carbs * 4) + (customFood.fats * 9))) > 20 && (
-                        <div className="text-yellow-500 mt-1 flex items-center gap-1">
-                          <span>⚠️</span>
-                          <span>Discrepancia detectada entre calorías y macros</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <select
-                  value={customFood.category}
-                  onChange={(e) => setCustomFood({ ...customFood, category: e.target.value as DatabaseFood['category'] })}
-                  className={`w-full px-4 py-3 rounded-lg border-none outline-none ${
-                    isDark
-                      ? 'bg-gray-700 text-white shadow-dark-neumorph'
-                      : 'bg-gray-50 text-gray-800 shadow-neumorph'
-                  }`}
-                >
-                  <option value="other">Otro</option>
-                  <option value="fruits">Frutas</option>
-                  <option value="vegetables">Vegetales</option>
-                  <option value="grains">Granos</option>
-                  <option value="proteins">Proteínas</option>
-                  <option value="dairy">Lácteos</option>
-                  <option value="prepared">Comida preparada</option>
-                  <option value="beverages">Bebidas</option>
-                  <option value="snacks">Snacks</option>
-                </select>
-              </div>
-              
-              <div className="flex space-x-3 pt-4">
                 <button
-                  onClick={() => { resetModal(); setCart([]); setSearchTerm(''); }}
-                  className={`flex-1 py-3 rounded-lg font-medium transition-all ${
-                    isDark
-                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600 shadow-dark-neumorph'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 shadow-neumorph'
-                  }`}
+                  onClick={saveCart}
+                  disabled={isProcessingCart}
+                  className={`w-full py-4 rounded-xl font-semibold text-white transition-all ${isProcessingCart ? 'bg-gray-400 cursor-not-allowed' : isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'}`}
                 >
-                  Cancelar
-                </button>
-                <button
-                  onClick={() => {
-                    if (!customFood.name.trim() || customFood.calories <= 0) return;
-                    handleAddToCart({ ...customFood }, false);
-                    setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
-                  }}
-                  className={`${isDark ? 'bg-green-600 hover:bg-green-700' : 'bg-green-500 hover:bg-green-600'} text-white px-3 py-3 rounded-lg font-medium`}
-                >
-                  + Agregar al Carrito
-                </button>
-                <button
-                  onClick={handleSaveAllFromCart}
-                  disabled={cart.length === 0 || isProcessingCart}
-                  className={`flex-1 py-3 rounded-lg font-medium text-white transition-all flex items-center justify-center gap-2 ${
-                    cart.length === 0 || isProcessingCart
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : isDark
-                      ? 'bg-purple-600 hover:bg-purple-700 shadow-dark-neumorph'
-                      : 'bg-purple-500 hover:bg-purple-600 shadow-neumorph'
-                  }`}
-                >
-                  <Save size={16} />
-                  <span>{isProcessingCart ? 'Guardando…' : `Guardar ${cart.length > 0 ? `(${cart.length})` : 'Todo'}`}</span>
+                  {isProcessingCart ? 'Guardando...' : `Guardar ${cart.length} ${cart.length === 1 ? 'alimento' : 'alimentos'}`}
                 </button>
               </div>
-            </div>
-
-            {/* Nota sobre la base de datos */}
-            <div className={`mt-4 pt-4 border-t text-xs text-center ${
-              isDark ? 'border-gray-600 text-gray-500' : 'border-gray-200 text-gray-400'
-            }`}>
-              Los alimentos que agregues se guardarán en tu base de datos personal para uso futuro
-            </div>
+            )}
           </div>
         </div>
       )}
     </div>
   );
 }
+ 
