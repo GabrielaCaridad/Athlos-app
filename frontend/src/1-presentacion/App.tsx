@@ -4,6 +4,7 @@
 // - Aplica tema claro/oscuro.
 import { useState } from 'react';
 import { Home, Utensils, Dumbbell, Trophy, Menu, X, TrendingUp } from 'lucide-react';
+import { Routes, Route, useLocation, Navigate, NavLink } from 'react-router-dom';
 import CorrelationsDashboard from './componentes/correlaciones/CorrelationsDashboard';
 import { useAuth } from './hooks/useAuth';
 import AuthForm from './componentes/auth/AuthForm';       
@@ -13,14 +14,14 @@ import ThemeToggle from './componentes/comun/ThemeToggle';
 import FoodTracker from './componentes/alimentacion/FoodTracker';
 import WorkoutTracker from './componentes/entrenamiento/WorkoutTracker';
 import ChatBot from './componentes/chatbot/ChatBot';
-
-type ActiveTab = 'dashboard' | 'food' | 'workouts' | 'wellness' | 'achievements' | 'correlations';
+import Dashboard from './componentes/dashboard/Dashboard';
+import ConfiguracionPage from './componentes/configuracion/ConfiguracionPage';
 
 function App() {
-  const { user, loading, isAuthenticated } = useAuth();
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const { loading, isAuthenticated } = useAuth();
   const [isDark, setIsDark] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const location = useLocation();
   if (loading) {
     return <LoadingScreen isDark={isDark} />;
   }
@@ -28,74 +29,12 @@ function App() {
     return <AuthForm isDark={isDark} onAuthSuccess={() => {}} />;
   }
   const navigation = [
-    { id: 'dashboard', name: 'Dashboard', icon: Home },
-    { id: 'correlations', name: 'Correlaciones', icon: TrendingUp },
-    { id: 'food', name: 'Alimentación', icon: Utensils },
-    { id: 'workouts', name: 'Entrenamientos', icon: Dumbbell },
-    { id: 'achievements', name: 'Logros', icon: Trophy },
-  ];
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'food':
-        return <FoodTracker isDark={isDark} />;
-      
-      case 'dashboard':
-        return (
-          <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg`}>
-              <Home size={28} className="text-white" />
-            </div>
-            <h2 className="text-2xl font-bold mb-4">
-              Bienvenido a Athlos, {user?.displayName || 'Usuario'}
-            </h2>
-            <p className={`text-lg mb-6 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-              Tu centro de control para una vida saludable
-            </p>
-            <div className={`max-w-md mx-auto p-6 rounded-2xl ${
-              isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'
-            }`}>
-              <h3 className="text-lg font-semibold mb-3">Información del Usuario</h3>
-              <p className={`text-sm mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                <strong>Nombre:</strong> {user?.displayName || 'No disponible'}
-              </p>
-              <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                <strong>Email:</strong> {user?.email}
-              </p>
-            </div>
-          </div>
-        );
-      
-      case 'workouts':
-        return <WorkoutTracker isDark={isDark} />;
-
-      case 'correlations':
-        return <CorrelationsDashboard isDark={isDark} />;
-      
-      case 'achievements':
-        return (
-          <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center shadow-lg`}>
-              <Trophy size={28} className="text-white" />
-            </div>
-            <h2 className="text-2xl font-bold mb-4">Logros</h2>
-            <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-              Esta sección estará disponible próximamente
-            </p>
-          </div>
-        );
-      
-      default:
-        return (
-          <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-            <h2 className="text-2xl font-bold mb-4">Página no encontrada</h2>
-            <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-              La sección que buscas no está disponible
-            </p>
-          </div>
-        );
-    }
-  };
+    { path: '/dashboard', name: 'Dashboard', icon: Home },
+    { path: '/correlations', name: 'Correlaciones', icon: TrendingUp },
+    { path: '/food', name: 'Alimentación', icon: Utensils },
+    { path: '/workouts', name: 'Entrenamientos', icon: Dumbbell },
+    { path: '/achievements', name: 'Logros', icon: Trophy },
+  ] as const;
 
   return (
     <div className={`min-h-screen transition-all duration-500 ${
@@ -135,25 +74,26 @@ function App() {
 
             <nav className="flex-1 p-4 space-y-2">
               {navigation.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setActiveTab(item.id as ActiveTab);
-                    setIsMobileMenuOpen(false);
-                  }}
-                  className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-left transition-all duration-200 ${
-                    activeTab === item.id
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className={({ isActive }) => `w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-left transition-all duration-200 ${
+                    isActive
                       ? isDark
                         ? 'bg-purple-600 text-white shadow-dark-neumorph'
                         : 'bg-purple-500 text-white shadow-neumorph'
                       : isDark
                       ? 'text-gray-300 hover:bg-gray-700 hover:text-white'
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
-                  }`}>
+                  }`}
+                >
                   <item.icon size={20} />
                   <span className="font-medium">{item.name}</span>
-                </button>
+                </NavLink>
               ))}
+
+              {/* Config removido de la lista principal (se mantiene abajo junto al perfil) */}
             </nav>
 
             <UserProfile isDark={isDark} />
@@ -187,9 +127,11 @@ function App() {
                 <Menu size={20} className={isDark ? 'text-white' : 'text-gray-800'} />
               </button>
               
-              {/* Título dinámico según la pestaña activa */}
+              {/* Título dinámico según la ruta actual */}
               <h2 className={`text-xl font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                {navigation.find(nav => nav.id === activeTab)?.name}
+                {location.pathname === '/config'
+                  ? 'Configuración'
+                  : navigation.find(nav => nav.path === location.pathname)?.name}
               </h2>
               
               <div className="w-10" /> {/* Espacio para centrar el título */}
@@ -199,7 +141,33 @@ function App() {
           {/* Area de la página donde se muestra el contenido */}
           <main className="flex-1 overflow-auto p-6">
             <div className="max-w-7xl mx-auto">
-              {renderContent()}
+              <Routes>
+                <Route path="/" element={<Navigate to="/dashboard" />} />
+                <Route path="/dashboard" element={<Dashboard isDark={isDark} />} />
+                <Route path="/correlations" element={<CorrelationsDashboard isDark={isDark} />} />
+                <Route path="/food" element={<FoodTracker isDark={isDark} />} />
+                <Route path="/workouts" element={<WorkoutTracker isDark={isDark} />} />
+                <Route path="/achievements" element={
+                  <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                    <div className={`w-16 h-16 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center shadow-lg`}>
+                      <Trophy size={28} className="text-white" />
+                    </div>
+                    <h2 className="text-2xl font-bold mb-4">Logros</h2>
+                    <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                      Esta sección estará disponible próximamente
+                    </p>
+                  </div>
+                } />
+                <Route path="/config" element={<ConfiguracionPage isDark={isDark} />} />
+                <Route path="*" element={
+                  <div className={`text-center py-20 ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                    <h2 className="text-2xl font-bold mb-4">Página no encontrada</h2>
+                    <p className={`text-lg ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                      La sección que buscas no está disponible
+                    </p>
+                  </div>
+                } />
+              </Routes>
             </div>
           </main>
           <ChatBot isDark={isDark} />

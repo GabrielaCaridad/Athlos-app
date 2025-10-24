@@ -101,6 +101,15 @@ match /workout_templates/{templateId} {
   allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
 }
 
+// Regla para insights personales del usuario
+match /user_insights/{userId} {
+  // Solo el usuario puede leer sus propios insights
+  allow read: if request.auth != null && request.auth.uid == userId;
+  
+  // Solo el usuario puede escribir sus propios insights
+  allow write: if request.auth != null && request.auth.uid == userId;
+}
+
 // Denegar todo lo demás
 match /{document=**} {
   allow read, write: if false;

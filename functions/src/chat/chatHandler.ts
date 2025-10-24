@@ -21,12 +21,74 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
+/**
+ * Limpia valores undefined de un objeto recursivamente
+ * Firestore no permite undefined, solo null
+ */
+function removeUndefined<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return null as any;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => removeUndefined(item)) as any;
+  }
+  if (typeof obj === 'object') {
+    const cleaned: Record<string, unknown> = {};
+    for (const key in obj as any) {
+      const value = (obj as any)[key];
+      if (value !== undefined) {
+        cleaned[key] = removeUndefined(value);
+      }
+    }
+    return cleaned as any as T;
+  }
+  return obj;
+}
+
+/**
+ * Convierte cualquier valor de fecha a Firestore Timestamp
+ */
+function toFirestoreTimestamp(value: any): FirebaseFirestore.Timestamp {
+  if (!value) {
+    return admin.firestore.Timestamp.now();
+  }
+  // Si ya es un Timestamp de Firestore
+  if (value?.toMillis && typeof value.toMillis === 'function') {
+    return value as FirebaseFirestore.Timestamp;
+  }
+  // Si es un objeto Date
+  if (value instanceof Date) {
+    return admin.firestore.Timestamp.fromDate(value);
+  }
+  // Si es un número (milisegundos)
+  if (typeof value === 'number') {
+    return admin.firestore.Timestamp.fromMillis(value);
+  }
+  // Si es un string ISO
+  if (typeof value === 'string') {
+    const d = new Date(value);
+    return admin.firestore.Timestamp.fromDate(d);
+  }
+  // Si es un objeto con _seconds y _nanoseconds (Timestamp serializado)
+  if (typeof value === 'object' && value._seconds !== undefined) {
+    return new admin.firestore.Timestamp(value._seconds, value._nanoseconds || 0);
+  }
+  // Fallback: ahora
+  console.warn('⚠️ Valor de fecha desconocido, usando ahora:', value);
+  return admin.firestore.Timestamp.now();
+}
+
+// Alias público simple según la convención pedida
+function toTimestamp(value: any): FirebaseFirestore.Timestamp {
+  return toFirestoreTimestamp(value);
+}
+
 export const CONFIG = {
   MAX_CONTEXT_MESSAGES: 10,
   CACHE_TTL_MINUTES: 5,
   RATE_LIMIT_HOURLY: 20,
   RATE_LIMIT_DAILY: 100,
-  MAX_RESPONSE_TIME_MS: 8000,
+  MAX_RESPONSE_TIME_MS: 12000,
   MODEL: 'gpt-4o-mini',
   MAX_TOKENS: 300,
   TEMPERATURE: 0.7,
@@ -90,6 +152,14 @@ interface UserContextSummary {
     workoutCount: number;
     totalCalories: number; // foods
   };
+  // NUEVO: Insights personales
+  personalInsights?: Array<{
+    type: 'pattern' | 'recommendation' | 'achievement';
+    title: string;
+    description: string;
+    keyEvidence: string; // Resumen de la evidencia más importante
+    actionable: string;
+  }>;
 }
 
 interface ChatRequestPayload {
@@ -110,26 +180,47 @@ interface ChatResponsePayload {
 // Utilities
 // const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
-const SYSTEM_PROMPT = (context: UserContextSummary) => `Eres Apolo, el asistente virtual de ATHLOS, una app de fitness y nutrición. Tu personalidad es:
-- Motivador pero realista
-- Empático y cercano
-- Profesional pero no rígido
-- Claro y conciso (máximo 2-3 oraciones)
+const SYSTEM_PROMPT = (context: UserContextSummary) => {
+  let insightsSection = '';
+  
+  if (context.personalInsights && context.personalInsights.length > 0) {
+    insightsSection = `\n\nPATRONES PERSONALES IDENTIFICADOS (úsalos en tus respuestas):`;
+    context.personalInsights.forEach((insight, idx) => {
+      insightsSection += `\n${idx + 1}. ${insight.title}
+   - Qué detecté: ${insight.description}
+   - Evidencia clave: ${insight.keyEvidence}
+   - Recomendación: ${insight.actionable}`;
+    });
+  }
 
-CONTEXTO DEL USUARIO:
-- Calorías hoy: ${context.totalCaloriesToday}/${context.targetCalories} kcal
+  return `Eres Apolo, el entrenador personal de ATHLOS. Tu personalidad es:
+- Motivador pero realista
+- Empático y cercano  
+- Profesional pero no rígido
+- Claro y conciso (máximo 3-4 oraciones)
+
+CONTEXTO DEL USUARIO HOY:
+- Calorías: ${context.totalCaloriesToday}/${context.targetCalories} kcal
 - Última comida: ${context.lastMeal ? context.lastMeal.name : 'Ninguna'}
 - Último entrenamiento: ${context.lastWorkout ? context.lastWorkout.name : 'Ninguno'}
 - Esta semana: ${context.weeklyStats.workoutCount} entrenamientos
+${insightsSection}
 
-REGLAS IMPORTANTES:
-1. NO diagnostiques enfermedades ni prescribas dietas médicas
-2. Si te preguntan sobre patologías, deriva a un profesional
-3. Usa los datos del contexto para personalizar tus respuestas
-4. Sé breve: máximo 2-3 oraciones
-5. Incluye emojis ocasionalmente (1-2 por respuesta)
-6. Si no sabes algo, admítelo honestamente
-7. Enfócate en motivación, hábitos y progreso gradual`;
+INSTRUCCIONES CRÍTICAS:
+1. Cuando respondas sobre energía, rendimiento o alimentación, USA LOS PATRONES PERSONALES arriba
+2. Cita datos concretos: "He notado que en tus 6 días de alta energía, consumías 293g de carbos..."
+3. Sé específico con SU historial, no teoría general
+4. Si no hay patrones relevantes para la pregunta, usa conocimientos generales
+5. NO diagnostiques enfermedades ni prescribas dietas médicas
+6. Usa emojis ocasionalmente (1-2 por respuesta)
+
+Ejemplo de buena respuesta:
+"Revisé tus registros. En tus días de mayor energía (8-9/10), consumías 
+en promedio 293g de carbohidratos. Hoy solo llevas 180g. Esa diferencia 
+de 113g podría explicar tu baja energía 🤔
+
+¿Quieres que te sugiera algo antes de entrenar?"`;
+};
 
 // Rate limiting helpers
 async function checkRateLimit(userId: string) {
@@ -149,16 +240,24 @@ async function checkRateLimit(userId: string) {
       isBlocked: false,
     };
   } else {
-    doc = snap.data() as RateLimitDoc;
+    const raw = snap.data() as any;
+    doc = {
+      userId: raw.userId,
+      hourlyCount: Number(raw.hourlyCount || 0),
+      dailyCount: Number(raw.dailyCount || 0),
+      windowStart: toFirestoreTimestamp(raw.windowStart),
+      lastReset: toFirestoreTimestamp(raw.lastReset),
+      isBlocked: Boolean(raw.isBlocked),
+    };
   }
 
   // Reset hourly window if needed
-  if (doc.windowStart.toMillis() !== startOfHour.toMillis()) {
+  if (toFirestoreTimestamp(doc.windowStart).toMillis() !== startOfHour.toMillis()) {
     doc.hourlyCount = 0;
     doc.windowStart = startOfHour;
   }
   // Reset daily if day changed
-  if (doc.lastReset.toMillis() !== startOfDay.toMillis()) {
+  if (toFirestoreTimestamp(doc.lastReset).toMillis() !== startOfDay.toMillis()) {
     doc.dailyCount = 0;
     doc.lastReset = startOfDay;
   }
@@ -180,7 +279,7 @@ async function checkRateLimit(userId: string) {
   // Increment and persist
   doc.hourlyCount += 1;
   doc.dailyCount += 1;
-  await ref.set(doc, { merge: true });
+  await ref.set(removeUndefined(doc), { merge: true });
   return { allowed: true };
 }
 
@@ -197,15 +296,21 @@ async function createChatSession(userId: string): Promise<string> {
     isActive: true,
     recentMessages: [],
   };
-  await db.collection('chat_sessions').doc(sessionId).set(payload);
+  await db.collection('chat_sessions').doc(sessionId).set(removeUndefined(payload));
   return sessionId;
 }
 
 async function getConversationHistory(sessionId: string): Promise<ChatMessage[]> {
   const doc = await db.collection('chat_sessions').doc(sessionId).get();
   if (!doc.exists) return [];
-  const data = doc.data() as ChatSessionDoc;
-  return (data.recentMessages || []).slice(-CONFIG.MAX_CONTEXT_MESSAGES);
+  const raw = doc.data() as any;
+  const recent = (raw.recentMessages || [])
+    .slice(-CONFIG.MAX_CONTEXT_MESSAGES)
+    .map((m: any) => ({
+      ...m,
+      timestamp: toTimestamp(m?.timestamp),
+    })) as ChatMessage[];
+  return recent;
 }
 
 // Context helper (with caching)
@@ -214,9 +319,15 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
   const now = admin.firestore.Timestamp.now();
   const snap = await cacheRef.get();
   if (snap.exists) {
-    const data = snap.data() as ContextCacheDoc;
-    if (data.expiresAt.toMillis() > now.toMillis()) {
-      return { summary: data.summary, wasFromCache: true };
+    const raw = snap.data() as any;
+    const cached: ContextCacheDoc = {
+      userId: raw.userId,
+      lastUpdated: toTimestamp(raw.lastUpdated),
+      expiresAt: toTimestamp(raw.expiresAt),
+      summary: raw.summary as UserContextSummary,
+    };
+    if (cached.expiresAt.toMillis() > now.toMillis()) {
+      return { summary: cached.summary, wasFromCache: true };
     }
   }
 
@@ -274,11 +385,42 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
     weeklyStats: { workoutCount, totalCalories: totalWeekCalories },
   };
 
-  const expiresAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + CONFIG.CACHE_TTL_MINUTES * 60 * 1000));
-  const cacheDoc: ContextCacheDoc = { userId, lastUpdated: now, expiresAt, summary };
-  await cacheRef.set(cacheDoc, { merge: true });
+  // Obtener insights personales del usuario
+  let personalInsights: UserContextSummary['personalInsights'] = undefined;
+  try {
+    // En funciones, por ahora leemos insights precalculados desde Firestore
+    const insightsSnap = await db.collection('user_insights')
+      .doc(userId)
+      .get();
+    
+    if (insightsSnap.exists) {
+      const data = insightsSnap.data() as any;
+      if (data && data.insights && Array.isArray(data.insights)) {
+        personalInsights = (data.insights as any[]).slice(0, 3).map((i: any) => ({
+          type: i.type,
+          title: i.title,
+          description: i.description,
+          keyEvidence: (i.evidence && Array.isArray(i.evidence) ? i.evidence[0] : '') || '',
+          actionable: i.actionable
+        }));
+      }
+    }
+  } catch (err) {
+    console.error('Error loading personal insights:', err);
+    // No bloqueamos el flujo si falla
+  }
+  if (personalInsights) {
+    summary.personalInsights = personalInsights;
+  }
 
-  return { summary, wasFromCache: false };
+  // Eliminar undefined antes de cachear/retornar
+  const cleanedSummary = removeUndefined(summary) as UserContextSummary;
+
+  const expiresAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + CONFIG.CACHE_TTL_MINUTES * 60 * 1000));
+  const cacheDoc: ContextCacheDoc = { userId, lastUpdated: now, expiresAt, summary: cleanedSummary };
+  await cacheRef.set(removeUndefined(cacheDoc), { merge: true });
+
+  return { summary: cleanedSummary, wasFromCache: false };
 }
 
 // OpenAI call with timeout and minimal classification heuristics
@@ -324,9 +466,275 @@ function getFallbackResponse(message: string, context: UserContextSummary, reaso
   return { reply: `${base} Intenta una pregunta concreta y breve.`, type };
 }
 
+// Lista de palabras clave válidas
+// ✅ KEYWORDS VÁLIDAS EXPANDIDAS - Solo responder sobre estos temas
+const FITNESS_KEYWORDS = [
+  // Ejercicio y entrenamiento
+  'ejercicio', 'entrenar', 'entrenamiento', 'rutina', 'workout', 'gym', 'gimnasio',
+  'músculo', 'muscular', 'fuerza', 'cardio', 'aeróbico', 'anaeróbico',
+  'peso', 'repeticiones', 'reps', 'series', 'sets', 'descanso', 'recuperación',
+  'calentamiento', 'estiramiento', 'flexibilidad', 'movilidad',
+  'press', 'sentadilla', 'squat', 'deadlift', 'peso muerto', 'bench press',
+  'curl', 'extensión', 'flexión', 'plancha', 'abdominales', 'core',
+  'dominadas', 'pull up', 'push up', 'lagartija', 'burpee', 'jumping',
+  'crossfit', 'yoga', 'pilates', 'running', 'correr', 'caminar', 'nadar',
+  'bicicleta', 'spinning', 'zumba', 'box', 'boxeo', 'artes marciales',
+  'hiit', 'tabata', 'circuito', 'superserie', 'drop set', 'pirámide',
+  'volumen', 'intensidad', 'frecuencia', 'periodización', 'macrociclo',
+  'espalda', 'pecho', 'pierna', 'brazo', 'hombro', 'glúteo', 'cuádriceps',
+  'bíceps', 'tríceps', 'deltoides', 'trapecio', 'dorsal', 'lumbar',
+  
+  // Nutrición y alimentación
+  'comida', 'alimento', 'comer', 'alimentación', 'nutrición', 'dieta',
+  'calorías', 'kcal', 'kilocalorías', 'energía',
+  'proteína', 'carbohidrato', 'hidrato', 'grasa', 'lípido', 'fibra',
+  'macro', 'macronutriente', 'micronutriente', 'vitamina', 'mineral',
+  'déficit', 'superávit', 'mantenimiento', 'recomposición',
+  'desayuno', 'almuerzo', 'comida', 'cena', 'merienda', 'snack', 'colación',
+  'breakfast', 'lunch', 'dinner',
+  'suplemento', 'creatina', 'whey', 'proteína whey', 'caseína', 'bcaa',
+  'pre-workout', 'post-workout', 'aminoácido', 'glutamina', 'arginina',
+  'agua', 'hidratación', 'hidratar', 'bebida', 'líquido',
+  'fruta', 'verdura', 'vegetal', 'carne', 'pollo', 'pescado', 'huevo',
+  'arroz', 'pasta', 'pan', 'cereal', 'avena', 'quinoa',
+  'lácteo', 'leche', 'yogur', 'queso',
+  'ayuno', 'intermitente', 'cetogénica', 'keto', 'paleo', 'vegano',
+  'vegetariano', 'flexitariano', 'mediterránea',
+  'índice glucémico', 'insulina', 'glucosa', 'azúcar en sangre',
+  'sodio', 'sal', 'potasio', 'calcio', 'hierro', 'zinc',
+  'omega 3', 'omega 6', 'grasa saturada', 'insaturada', 'trans',
+  'colesterol', 'hdl', 'ldl', 'triglicéridos',
+  
+  // Bienestar y recuperación
+  'dormir', 'sueño', 'descanso', 'recuperación', 'regeneración',
+  'estrés', 'ansiedad', 'relajación', 'meditación', 'mindfulness',
+  'bienestar', 'wellness', 'salud', 'saludable', 'healthy',
+  'energía', 'cansancio', 'fatiga', 'agotamiento',
+  'dolor', 'lesión', 'injury', 'molestia', 'inflamación',
+  'dolor muscular', 'doms', 'agujetas', 'contractura',
+  'postura', 'ergonomía', 'columna', 'espalda baja',
+  'masaje', 'foam roller', 'rodillo', 'estiramiento',
+  'sistema inmune', 'defensas', 'inmunidad',
+  'hidratación', 'deshidratación', 'electrolitos',
+  
+  // Objetivos y progreso
+  'objetivo', 'meta', 'goal', 'propósito', 'target',
+  'progreso', 'avance', 'mejora', 'resultado', 'logro', 'achievement',
+  'adelgazar', 'perder peso', 'bajar', 'quemar grasa', 'definir',
+  'ganar', 'aumentar', 'subir peso', 'masa muscular', 'volumen',
+  'tonificar', 'marcar', 'definición', 'cutting', 'bulking',
+  'recomposición corporal', 'composición', 'porcentaje grasa',
+  'peso corporal', 'báscula', 'balanza', 'medida', 'medición',
+  'foto', 'fotografía', 'progreso visual', 'before after',
+  'índice masa corporal', 'imc', 'bmi', 'peso ideal',
+  'rendimiento', 'performance', 'fuerza máxima', '1rm',
+  'resistencia', 'endurance', 'stamina', 'aguante',
+  'velocidad', 'potencia', 'explosividad', 'agilidad',
+  'motivación', 'disciplina', 'constancia', 'hábito',
+  'planificación', 'plan', 'programa', 'schedule',
+  
+  // Términos generales relacionados
+  'fitness', 'fit', 'forma física', 'condición física',
+  'salud física', 'salud mental', 'vida saludable',
+  'estilo de vida', 'lifestyle', 'cambio', 'transformación',
+  'coach', 'entrenador', 'nutricionista', 'dietista',
+  'app', 'aplicación', 'athlos', 'apolo', 'registro',
+  'seguimiento', 'tracking', 'monitor', 'medir',
+];
+
+// ❌ KEYWORDS PROHIBIDAS EXPANDIDAS - Rechazar inmediatamente
+const OUT_OF_SCOPE_KEYWORDS = [
+  // Belleza y estética NO relacionada con fitness
+  'pelo', 'cabello', 'tinte', 'teñir', 'pintar pelo', 'color de pelo', 'capilar',
+  'maquillaje', 'makeup', 'cosmético', 'crema facial', 'sérum', 'mascarilla facial',
+  'uñas', 'manicura', 'pedicura', 'esmaltado', 'gel',
+  'pestañas', 'cejas', 'depilar', 'depilación', 'cera', 'láser estético',
+  'botox', 'ácido hialurónico', 'relleno', 'lifting',
+  'tatuaje', 'tattoo', 'piercing', 'perforación',
+  'perfume', 'fragancia', 'colonia', 'aroma',
+  
+  // Moda y vestimenta
+  'ropa', 'vestido', 'pantalón', 'camisa', 'blusa', 'falda',
+  'zapatos', 'zapatillas de vestir', 'tacones', 'sandalias',
+  'moda', 'fashion', 'outfit', 'look', 'estilo de ropa',
+  'accesorio', 'joyería', 'collar', 'pulsera', 'anillo',
+  'bolso', 'cartera', 'mochila de moda', 'maleta',
+  
+  // Relaciones y amor
+  'amor', 'enamorar', 'pareja', 'novio', 'novia', 'esposo', 'esposa',
+  'cita romántica', 'date', 'ligar', 'seducir', 'conquistar',
+  'matrimonio', 'boda', 'casarse', 'divorcio', 'separación',
+  'romance', 'romántico', 'beso', 'abrazo amoroso',
+  'sexo', 'sexual', 'intimidad', 'erótico',
+  'celos', 'infidelidad', 'engaño', 'ex pareja',
+  
+  // Trabajo y finanzas
+  'trabajo', 'empleo', 'job', 'empresa', 'oficina', 'jefe', 'jefa',
+  'sueldo', 'salario', 'pago', 'nómina', 'contrato laboral',
+  'curriculum', 'cv', 'entrevista laboral', 'ascenso',
+  'dinero', 'plata', 'efectivo', 'billete', 'moneda',
+  'inversión', 'invertir', 'bolsa', 'acciones', 'trading',
+  'banco', 'cuenta bancaria', 'préstamo', 'crédito', 'hipoteca',
+  'ahorro', 'ahorrar', 'presupuesto financiero', 'economía personal',
+  'impuesto', 'declaración', 'factura no relacionada',
+  'negocio', 'emprendimiento', 'startup', 'empresa propia',
+  
+  // Entretenimiento
+  'película', 'movie', 'cine', 'serie', 'netflix', 'streaming',
+  'actor', 'actriz', 'famoso', 'celebrity', 'influencer no fitness',
+  'música no de entrenamiento', 'canción', 'album', 'concierto',
+  'videojuego', 'gaming', 'consola', 'playstation', 'xbox',
+  'anime', 'manga', 'comic', 'superhéroe',
+  'libro no de fitness', 'novela', 'ficción', 'literatura',
+  
+  // Tecnología NO relacionada
+  'computadora', 'ordenador', 'pc', 'laptop no fitness',
+  'celular', 'móvil', 'smartphone', 'iphone', 'android',
+  'tablet', 'ipad', 'dispositivo no fitness',
+  'software', 'programa', 'código', 'programación',
+  'inteligencia artificial', 'ai', 'machine learning',
+  'blockchain', 'bitcoin', 'criptomoneda', 'nft',
+  
+  // Otros temas
+  'política', 'político', 'gobierno', 'presidente', 'elección',
+  'religión', 'dios', 'iglesia', 'rezo', 'oración religiosa',
+  'filosofía', 'existencial', 'metafísica',
+  'mascota', 'perro', 'gato', 'animal doméstico',
+  'coche', 'auto', 'carro', 'vehículo', 'conducir',
+  'viaje', 'vacaciones', 'turismo', 'hotel', 'playa',
+  'clima', 'tiempo', 'temperatura ambiente', 'lluvia', 'sol',
+  'casa', 'vivienda', 'decoración', 'mueble', 'diseño interior',
+  'jardinería', 'planta ornamental', 'jardín',
+  'cocinar no fitness', 'receta gourmet', 'restaurante',
+  'astrología', 'horóscopo', 'signo zodiacal', 'tarot',
+  'chisme', 'gossip', 'rumor', 'escándalo',
+];
+
+// FRASES COMPLETAS PROHIBIDAS 
+const PROHIBITED_PHRASES = [
+  'pintar el pelo',
+  'teñir el cabello',
+  'color de cabello',
+  'cambiar de look',
+  'cortarme el pelo',
+  'peinado',
+  'que ropa',
+  'que vestir',
+  'como vestir',
+  'outfit para',
+  'como ligar',
+  'conquistar a',
+  'me gusta un',
+  'enamorado de',
+  'mi pareja',
+  'mi novio',
+  'mi novia',
+  'precio de',
+  'cuanto cuesta',
+  'donde comprar',
+  'marca de ropa',
+  'marca de zapatos',
+];
+
+function isRelevantQuery(message: string): { 
+  isRelevant: boolean; 
+  confidence: number; 
+  reason?: string;
+} {
+  const lower = message.toLowerCase().trim();
+  
+  // NIVEL 1: Verificar frases completas prohibidas primero
+  for (const phrase of PROHIBITED_PHRASES) {
+    if (lower.includes(phrase.toLowerCase())) {
+      console.log(`🚫 Blocked by prohibited phrase: "${phrase}"`);
+      return { 
+        isRelevant: false, 
+        confidence: 0.99,
+        reason: `prohibited_phrase: ${phrase}`
+      };
+    }
+  }
+  
+  // NIVEL 2: Check explicit out-of-scope keywords
+  const foundOutOfScope: string[] = [];
+  for (const keyword of OUT_OF_SCOPE_KEYWORDS) {
+    if (lower.includes(keyword.toLowerCase())) {
+      foundOutOfScope.push(keyword);
+    }
+  }
+  
+  if (foundOutOfScope.length > 0) {
+    console.log(`🚫 Blocked by keywords: ${foundOutOfScope.join(', ')}`);
+    return { 
+      isRelevant: false, 
+      confidence: 0.98,
+      reason: `out_of_scope_keywords: ${foundOutOfScope.join(', ')}`
+    };
+  }
+  
+  // NIVEL 3: Mensajes muy cortos (saludos, etc) - permitir con precaución
+  if (message.length < 15) {
+    const greetings = ['hola', 'hey', 'buenas', 'hello', 'hi', 'buenos', 'saludos', 'que tal', 'qué tal'];
+    const isGreeting = greetings.some(g => lower.includes(g));
+    
+    if (isGreeting) {
+      return { isRelevant: true, confidence: 0.9 };
+    }
+    
+    // Muy corto pero no saludo - baja confianza
+    return { isRelevant: true, confidence: 0.4 };
+  }
+  
+  // NIVEL 4: Buscar palabras clave válidas
+  const foundRelevant: string[] = [];
+  for (const keyword of FITNESS_KEYWORDS) {
+    if (lower.includes(keyword.toLowerCase())) {
+      foundRelevant.push(keyword);
+    }
+  }
+  
+  // Si tiene 2+ keywords válidas = muy probablemente relevante
+  if (foundRelevant.length >= 2) {
+    console.log(`✅ Approved by keywords (${foundRelevant.length}): ${foundRelevant.slice(0, 3).join(', ')}`);
+    return { isRelevant: true, confidence: 0.95 };
+  }
+  
+  // Si tiene 1 keyword válida = probablemente relevante
+  if (foundRelevant.length === 1) {
+    console.log(`✅ Approved by keyword: ${foundRelevant[0]}`);
+    return { isRelevant: true, confidence: 0.85 };
+  }
+  
+  // NIVEL 5: Análisis contextual - preguntas genéricas sobre la app
+  const appRelated = [
+    'athlos', 'apolo', 'app', 'aplicación', 'registrar', 'guardar',
+    'borrar', 'eliminar', 'modificar', 'como funciona', 'ayuda',
+    'configuración', 'perfil', 'cuenta', 'usuario'
+  ];
+  
+  if (appRelated.some(term => lower.includes(term))) {
+    return { isRelevant: true, confidence: 0.7 };
+  }
+  
+  // NIVEL 6: Si NO tiene keywords válidas Y tiene más de 20 caracteres = probablemente fuera de scope
+  if (message.length > 20 && foundRelevant.length === 0) {
+    console.log(`⚠️ Suspicious query (no fitness keywords, long): "${message}"`);
+    // Dar baja confianza para que OpenAI decida, pero registrar
+    return { 
+      isRelevant: true, 
+      confidence: 0.2,
+      reason: 'no_fitness_keywords_found'
+    };
+  }
+  
+  // Default: permitir pero con confianza media-baja
+  return { isRelevant: true, confidence: 0.5 };
+}
+
 async function saveMessage(sessionId: string, role: Role, content: string, userId: string, extras?: Partial<ChatMessage>) {
   const now = admin.firestore.Timestamp.now();
-  const msg: ChatMessage = { role, content, timestamp: now, ...extras } as ChatMessage;
+  const base: ChatMessage = { role, content, timestamp: now, ...extras } as ChatMessage;
+  const msg: ChatMessage = removeUndefined(base) as ChatMessage;
   const sessionRef = db.collection('chat_sessions').doc(sessionId);
   const batch = db.batch();
   batch.set(sessionRef.collection('messages').doc(), msg);
@@ -344,9 +752,14 @@ async function trimRecentMessages(sessionId: string) {
   const ref = db.collection('chat_sessions').doc(sessionId);
   const snap = await ref.get();
   if (!snap.exists) return;
-  const data = snap.data() as ChatSessionDoc;
-  const trimmed = (data.recentMessages || []).slice(-CONFIG.MAX_CONTEXT_MESSAGES);
-  await ref.set({ recentMessages: trimmed }, { merge: true });
+  const raw = snap.data() as any;
+  const trimmed = (raw.recentMessages || [])
+    .slice(-CONFIG.MAX_CONTEXT_MESSAGES)
+    .map((m: any) => removeUndefined({
+      ...m,
+      timestamp: toTimestamp(m?.timestamp),
+    }));
+  await ref.set(removeUndefined({ recentMessages: trimmed }), { merge: true });
 }
 
 async function updateAnalytics(userId: string, responseTime: number, tokens?: number, hadError?: boolean, usedFallback?: boolean) {
@@ -370,7 +783,7 @@ async function updateAnalytics(userId: string, responseTime: number, tokens?: nu
     const newTotal = (current.totalMessages || 0) + 1;
     const prevAvg = current.avgResponseTime || 0;
     const newAvg = prevAvg === 0 ? responseTime : Math.round((prevAvg * current.totalMessages + responseTime) / newTotal);
-    tx.set(ref, {
+    tx.set(ref, removeUndefined({
       date: dateStr,
       totalMessages: newTotal,
       uniqueUsers: Object.keys(users).length,
@@ -380,12 +793,12 @@ async function updateAnalytics(userId: string, responseTime: number, tokens?: nu
       errorCount: (current.errorCount || 0) + (hadError ? 1 : 0),
       totalCost: current.totalCost || 0,
       users,
-    }, { merge: true });
+    }), { merge: true });
   });
 }
 
 // Main function
-export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 10, memory: '256MiB', secrets: ['OPENAI_API_KEY'] }, async (request): Promise<ChatResponsePayload> => {
+export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: '512MiB', secrets: ['OPENAI_API_KEY'] }, async (request): Promise<ChatResponsePayload> => {
     const started = Date.now();
     try {
       // Auth
@@ -399,6 +812,39 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 10, memory: 
       const message = (data?.message || '').toString().trim();
       if (!message) throw new HttpsError('invalid-argument', 'Mensaje vacío.');
       if (message.length > 500) throw new HttpsError('invalid-argument', 'Mensaje demasiado largo (máx. 500 caracteres).');
+
+  // ✅ VALIDACIÓN DE RELEVANCIA
+  const relevance = isRelevantQuery(message);
+  // ⚠️ THRESHOLD MÁS ESTRICTO: rechazar con confianza > 0.85
+  if (!relevance.isRelevant && relevance.confidence > 0.85) {
+        // Respuesta inmediata sin llamar a OpenAI
+        const outOfScopeReply = "🤔 Esa pregunta está fuera de mi área de expertise en fitness y nutrición. Estoy aquí para ayudarte con:\n\n💪 Entrenamientos y ejercicios\n🥗 Nutrición y alimentación\n📊 Seguimiento de progreso\n💤 Descanso y recuperación\n\n¿En qué puedo ayudarte hoy?";
+        
+        let sessionId = (data?.sessionId || '').toString();
+        if (!sessionId) sessionId = await createChatSession(uid);
+        
+        await saveMessage(sessionId, 'user', message, uid);
+        await saveMessage(sessionId, 'assistant', outOfScopeReply, uid, { 
+          responseTime: Date.now() - started 
+        });
+        
+        // Log para análisis (opcional)
+        await db.collection('chat_out_of_scope_log').add(removeUndefined({
+          userId: uid,
+          message,
+          reason: relevance.reason,
+          timestamp: admin.firestore.Timestamp.now(),
+        }));
+        
+        return {
+          sessionId,
+          reply: outOfScopeReply,
+          type: 'normal',
+          responseTimeMs: Date.now() - started,
+          wasFallback: false,
+          wasFromCache: false,
+        };
+      }
 
       // Initialize OpenAI client now that secrets are available
       const openai = new OpenAI({

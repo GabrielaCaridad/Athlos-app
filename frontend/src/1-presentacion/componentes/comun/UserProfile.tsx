@@ -1,6 +1,7 @@
 // UserProfile: muestra info del usuario en la barra lateral y permite cerrar sesión.
 import { LogOut, User, Settings } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
+import { Link } from 'react-router-dom';
 
 interface UserProfileProps {
   isDark: boolean;
@@ -28,7 +29,8 @@ export default function UserProfile({ isDark }: UserProfileProps) {
         </div>
       </div>
       <div className="flex space-x-2">
-        <button
+        <Link
+          to="/config"
           className={`flex-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-lg text-sm transition-all ${
             isDark
               ? 'hover:bg-gray-700 text-gray-300 hover:text-white'
@@ -37,7 +39,7 @@ export default function UserProfile({ isDark }: UserProfileProps) {
         >
           <Settings size={14} />
           <span>Config</span>
-        </button>
+        </Link>
         <button
           onClick={logout}
           className={`flex-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-lg text-sm transition-all ${

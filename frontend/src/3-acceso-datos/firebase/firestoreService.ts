@@ -24,6 +24,33 @@ export interface UserProfile {
   xp: number; // Puntos de experiencia acumulados
   achievements: string[]; // Array de logros desbloqueados
   createdAt: Timestamp; // Fecha de creación del perfil
+
+  // 🆕 Datos físicos para personalización
+  dateOfBirth?: string; // YYYY-MM-DD format
+  gender?: 'male' | 'female' | 'other' | 'prefer_not_to_say';
+  currentWeight?: number; // kg
+  height?: number; // cm
+
+  // 🆕 Objetivos del usuario
+  primaryGoal?: 'lose_weight' | 'maintain_weight' | 'gain_muscle' | 'improve_performance' | 'general_health';
+  targetWeight?: number; // kg, opcional
+  activityLevel?: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
+  workoutsPerWeek?: number; // 1-7 días
+
+  // 🆕 Nutrición calculada automáticamente
+  dailyCalorieTarget?: number; // kcal calculadas según objetivo
+  macroTargets?: {
+    protein: number; // gramos
+    carbs: number;
+    fats: number;
+  };
+
+  // 🆕 Preferencias
+  dietaryRestrictions?: string[]; // ej: ["vegetariano", "sin gluten"]
+  preferredWorkoutTime?: 'morning' | 'afternoon' | 'evening';
+
+  // 🆕 Metadatos
+  updatedAt?: Timestamp; // Timestamp de última actualización
 }
 
 // User profile CRUD
@@ -47,6 +74,104 @@ export const userService = {
       console.error('Error creating user profile:', error);
       throw error;
     }
+  },
+
+  /**
+   * Calcula la edad a partir de una fecha de nacimiento (YYYY-MM-DD)
+   */
+  calculateAge(dateOfBirth?: string): number {
+    if (!dateOfBirth) return 0;
+    const d = new Date(dateOfBirth);
+    if (Number.isNaN(d.getTime())) return 0;
+    const today = new Date();
+    let age = today.getFullYear() - d.getFullYear();
+    const m = today.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+    return Math.max(0, age);
+  },
+
+  /**
+   * Calcula BMR usando Mifflin-St Jeor
+   */
+  calculateBMR(weightKg: number, heightCm: number, age: number, gender: NonNullable<UserProfile['gender']>): number {
+    const base = 10 * (weightKg || 0) + 6.25 * (heightCm || 0) - 5 * (age || 0);
+    const genderOffset = gender === 'male' ? 5 : gender === 'female' ? -161 : 0;
+    return Math.max(0, base + genderOffset);
+  },
+
+  /**
+   * Aplica multiplicador de actividad para obtener TDEE
+   */
+  calculateTDEE(bmr: number, activityLevel: NonNullable<UserProfile['activityLevel']>): number {
+    const activityMultipliers: Record<NonNullable<UserProfile['activityLevel']>, number> = {
+      sedentary: 1.2,
+      light: 1.375,
+      moderate: 1.55,
+      active: 1.725,
+      very_active: 1.9
+    };
+    const mult = activityMultipliers[activityLevel] ?? 1.55;
+    return Math.max(0, bmr * mult);
+  },
+
+  /**
+   * Ajusta calorías objetivo según el objetivo principal
+   */
+  calculateCalorieTarget(tdee: number, primaryGoal: NonNullable<UserProfile['primaryGoal']>): number {
+    const goalAdjust: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: -0.15,
+      maintain_weight: 0,
+      gain_muscle: 0.12,
+      improve_performance: 0.05,
+      general_health: 0
+    };
+    const adjust = goalAdjust[primaryGoal] ?? 0;
+    return Math.max(1200, Math.round(tdee * (1 + adjust)));
+  },
+
+  /**
+   * Calcula distribución de macronutrientes en gramos
+   * Si no se proporciona peso, usa proporciones sobre calorías como aproximación.
+   */
+  calculateMacros(
+    dailyCalories: number,
+    primaryGoal: NonNullable<UserProfile['primaryGoal']>,
+    weightKg?: number
+  ): { protein: number; carbs: number; fats: number } {
+    // Si hay peso, aproximar proteína por kg según objetivo (alineado a initializePersonalization)
+    const proteinPerKg: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: 2.0,
+      maintain_weight: 1.6,
+      gain_muscle: 1.8,
+      improve_performance: 1.7,
+      general_health: 1.6
+    };
+
+    let proteinG = 0;
+    if (typeof weightKg === 'number' && weightKg > 0) {
+      proteinG = Math.round(weightKg * (proteinPerKg[primaryGoal] ?? 1.6));
+    } else {
+      // fallback por porcentaje cuando no hay peso
+      const pct = primaryGoal === 'lose_weight' || primaryGoal === 'gain_muscle' ? 0.25 : primaryGoal === 'improve_performance' ? 0.22 : 0.20;
+      proteinG = Math.round((dailyCalories * pct) / 4);
+    }
+
+    // Grasas por porcentaje según objetivo
+    const fatPctByGoal: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: 0.30,
+      maintain_weight: 0.30,
+      gain_muscle: 0.25,
+      improve_performance: 0.25,
+      general_health: 0.30
+    };
+    const fatCalories = dailyCalories * (fatPctByGoal[primaryGoal] ?? 0.30);
+    const fatsG = Math.round(fatCalories / 9);
+
+    const proteinCalories = proteinG * 4;
+    const remainingCalories = Math.max(0, dailyCalories - (proteinCalories + fatCalories));
+    const carbsG = Math.round(remainingCalories / 4);
+
+    return { protein: Math.max(0, proteinG), carbs: Math.max(0, carbsG), fats: Math.max(0, fatsG) };
   },
 
   /**
@@ -91,6 +216,137 @@ export const userService = {
       console.error('Error getting user profile:', error);
       throw error;
     }
+  },
+
+  /**
+   * Calcula el IMC (Índice de Masa Corporal) y su categoría básica
+   */
+  calculateBMI(heightCm: number, weightKg: number): { bmi: number; category: 'underweight' | 'normal' | 'overweight' | 'obese' } {
+    const h = Math.max(0, heightCm) / 100; // a metros
+    const w = Math.max(0, weightKg);
+    const bmi = h > 0 ? +(w / (h * h)).toFixed(1) : 0;
+    let category: 'underweight' | 'normal' | 'overweight' | 'obese' = 'normal';
+    if (bmi < 18.5) category = 'underweight';
+    else if (bmi < 25) category = 'normal';
+    else if (bmi < 30) category = 'overweight';
+    else category = 'obese';
+    return { bmi, category };
+  },
+
+  /**
+   * Inicializa/actualiza los campos de personalización del perfil
+   * - Calcula TDEE usando Mifflin-St Jeor + multiplicador de actividad
+   * - Ajusta según objetivo (déficit/superávit)
+   * - Calcula macros (proteína/fat/carbs)
+   * - Actualiza dailyCalorieTarget, macroTargets y updatedAt
+   * Devuelve los valores computados para uso inmediato en UI
+   */
+  async initializePersonalization(
+    userId: string,
+    overrides?: Partial<UserProfile>
+  ): Promise<{ dailyCalorieTarget: number; macroTargets: { protein: number; carbs: number; fats: number } }> {
+    const profile = (await this.getUserProfile(userId)) || ({} as UserProfile);
+    // fusionar con overrides sin eliminar datos anteriores
+    const merged: Partial<UserProfile> = { ...profile, ...overrides };
+
+    // Datos base con defaults razonables
+    const gender = merged.gender || 'other';
+    const height = typeof merged.height === 'number' && merged.height > 0 ? merged.height : 170; // cm
+    const weight = typeof merged.currentWeight === 'number' && merged.currentWeight > 0 ? merged.currentWeight : 70; // kg
+    const dob = merged.dateOfBirth; // YYYY-MM-DD
+    const activity = merged.activityLevel || 'moderate';
+    const goal = merged.primaryGoal || 'general_health';
+
+    // Edad
+    const calcAge = (dateStr?: string): number => {
+      if (!dateStr) return 30; // default razonable si no está definido
+      const d = new Date(dateStr);
+      if (Number.isNaN(d.getTime())) return 30;
+      const today = new Date();
+      let age = today.getFullYear() - d.getFullYear();
+      const m = today.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+      return Math.max(0, age);
+    };
+    const age = calcAge(dob);
+
+    // BMR (Mifflin-St Jeor)
+    // Hombre: BMR = 10*kg + 6.25*cm - 5*edad + 5
+    // Mujer:  BMR = 10*kg + 6.25*cm - 5*edad - 161
+    // Otros: offset 0 como neutral
+    const base = 10 * weight + 6.25 * height - 5 * age;
+    const genderOffset = gender === 'male' ? 5 : gender === 'female' ? -161 : 0;
+    const bmr = base + genderOffset;
+
+    // Multiplicador de actividad
+    const activityMultipliers: Record<NonNullable<UserProfile['activityLevel']>, number> = {
+      sedentary: 1.2,
+      light: 1.375,
+      moderate: 1.55,
+      active: 1.725,
+      very_active: 1.9
+    };
+    const multiplier = activityMultipliers[activity] ?? 1.55;
+    const tdee = bmr * multiplier;
+
+    // Ajuste por objetivo
+    // lose_weight: -15%, maintain/general_health: 0%, gain_muscle: +12%, improve_performance: +5%
+    const goalAdjust: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: -0.15,
+      maintain_weight: 0,
+      gain_muscle: 0.12,
+      improve_performance: 0.05,
+      general_health: 0
+    };
+    const adjust = goalAdjust[goal] ?? 0;
+    const dailyCalorieTarget = Math.max(1200, Math.round(tdee * (1 + adjust))); // clamp mínimo razonable
+
+    // Macros
+    // Proteína por kg según objetivo (g/kg)
+    const proteinPerKg: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: 2.0,
+      maintain_weight: 1.6,
+      gain_muscle: 1.8,
+      improve_performance: 1.7,
+      general_health: 1.6
+    };
+    let proteinG = Math.round(weight * (proteinPerKg[goal] ?? 1.6));
+    // Fat porcentaje
+    const fatPctByGoal: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
+      lose_weight: 0.30,
+      maintain_weight: 0.30,
+      gain_muscle: 0.25,
+      improve_performance: 0.25,
+      general_health: 0.30
+    };
+    const fatCalories = dailyCalorieTarget * (fatPctByGoal[goal] ?? 0.30);
+  const fatsG = Math.round(fatCalories / 9);
+
+    // Si no hay weight confiable, reparte proteína como 20% de calorías
+    if (!merged.currentWeight || merged.currentWeight <= 0) {
+      const proteinCalories = dailyCalorieTarget * 0.20;
+      proteinG = Math.round(proteinCalories / 4);
+    }
+
+    const proteinCalories = proteinG * 4;
+    const remainingCalories = Math.max(0, dailyCalorieTarget - (proteinCalories + fatCalories));
+    const carbsG = Math.round(remainingCalories / 4);
+
+    const macroTargets = {
+      protein: proteinG,
+      carbs: Math.max(0, carbsG),
+      fats: Math.max(0, fatsG)
+    };
+
+    // Persistir solo los campos calculados y timestamp de actualización, más overrides explícitos
+    await this.updateUserProfile(userId, {
+      ...overrides,
+      dailyCalorieTarget,
+      macroTargets,
+      updatedAt: Timestamp.now()
+    });
+
+    return { dailyCalorieTarget, macroTargets };
   }
 };
 

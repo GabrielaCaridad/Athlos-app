@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageCircle, X, Send, Zap, Utensils, Dumbbell, TrendingUp, Trash2, RefreshCcw, Sparkles, Award, Target } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useChat, Message } from '../../hooks/useChat';
+import { usePersonalInsights } from '../../hooks/usePersonalInsights';
 
 interface ChatBotProps {
   isDark: boolean;
@@ -14,12 +15,28 @@ export default function ChatBot({ isDark }: ChatBotProps) {
   const { messages, isLoading, error, sendMessage, clearMessages, retryLastMessage, isRateLimited } = useChat();
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { insights } = usePersonalInsights(user?.uid || '');
 
-  const quickActions = [
-    { text: "¿Qué comer antes de entrenar?", icon: Utensils, category: 'nutrition', gradient: 'from-green-500 to-emerald-600' },
-    { text: "Rutina para pecho y tríceps", icon: Dumbbell, category: 'workout', gradient: 'from-blue-500 to-cyan-600' },
-    { text: "¿Cómo mejorar mi progreso?", icon: TrendingUp, category: 'progress', gradient: 'from-purple-500 to-pink-600' }
-  ];
+  const quickActions = useMemo(() => {
+    const baseActions = [
+      { text: "¿Qué comer antes de entrenar?", icon: Utensils, category: 'nutrition', gradient: 'from-green-500 to-emerald-600' },
+      { text: "Rutina para pecho y tríceps", icon: Dumbbell, category: 'workout', gradient: 'from-blue-500 to-cyan-600' },
+      { text: "¿Cómo mejorar mi progreso?", icon: TrendingUp, category: 'progress', gradient: 'from-purple-500 to-pink-600' },
+    ];
+
+    // Si hay insight de carbos, reemplazar el tercer botón (progreso) por uno contextual
+    const carbsInsight = insights.find(i => i.title.toLowerCase().includes('carbohidrato'));
+    if (carbsInsight) {
+      baseActions[2] = {
+        text: "¿Cómo alcanzar mis 293g de carbos?",
+        icon: TrendingUp,
+        category: 'progress',
+        gradient: 'from-purple-500 to-pink-600'
+      };
+    }
+
+    return baseActions;
+  }, [insights]);
 
   const handleSend = async () => {
     if (!inputText.trim() || isLoading) return;
@@ -50,8 +67,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
   const getMessageStyle = (message: Message) => {
     if (message.isUser) {
       return isDark 
-        ? 'bg-gradient-to-r from-purple-600 to-purple-700 text-white shadow-lg' 
-        : 'bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-lg';
+        ? 'bg-gradient-to-r from-purple-600 to-purple-700 text-white shadow-lg shadow-purple-500/30' 
+        : 'bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-lg shadow-purple-500/30';
     }
     
     if (message.type === 'recommendation') {
@@ -74,7 +91,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     
     return isDark 
       ? 'bg-gray-800/90 text-white border border-gray-700/50' 
-      : 'bg-white text-gray-800 border border-gray-200 shadow-sm';
+      : 'bg-white text-gray-800 border border-gray-200 shadow-md shadow-gray-200/50';
   };
 
   const getMessageBadge = (type: Message['type']) => {
@@ -112,34 +129,72 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     }
   }, [isOpen]);
 
+  const formatMessage = (text: string) => {
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+    return (
+      <div className="space-y-3">
+        {paragraphs.map((paragraph, idx) => (
+          <p key={idx} className="text-sm leading-normal">
+            {paragraph.split('\n').map((line, lineIdx, arr) => (
+              <span key={lineIdx}>
+                {line}
+                {lineIdx < arr.length - 1 && <br />}
+              </span>
+            ))}
+          </p>
+        ))}
+      </div>
+    );
+  };
+
   if (!user) {
     return null;
   }
 
   return (
     <>
-      {/* Chat Button con animación pulse mejorada */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`fixed bottom-6 right-6 z-50 w-16 h-16 rounded-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
-          isDark 
-            ? 'bg-gradient-to-br from-purple-600 to-purple-700 shadow-2xl shadow-purple-500/50' 
-            : 'bg-gradient-to-br from-purple-500 to-purple-600 shadow-2xl shadow-purple-500/30'
-        } ${!isOpen ? 'animate-pulse' : ''}`}
-      >
-        <div className="relative w-full h-full flex items-center justify-center">
-          {isOpen ? <X size={28} className="text-white" /> : <MessageCircle size={28} className="text-white" />}
-          <div className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center ${
-            isDark ? 'bg-yellow-500' : 'bg-yellow-400'
-          } shadow-lg animate-bounce`}>
-            <Sparkles size={14} className="text-white" />
+      {/* Chat Button con animación pulse mejorada y posición dinámica */}
+      {isOpen ? (
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className={`fixed bottom-6 right-6 z-50 w-16 h-16 rounded-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
+            isDark 
+              ? 'bg-gradient-to-br from-purple-600 to-purple-700 shadow-2xl shadow-purple-500/50' 
+              : 'bg-gradient-to-br from-purple-500 to-purple-600 shadow-2xl shadow-purple-500/30'
+          }`}
+        >
+          <div className="relative w-full h-full flex items-center justify-center">
+            <X size={28} className="text-white" />
+            <div className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center ${
+              isDark ? 'bg-yellow-500' : 'bg-yellow-400'
+            } shadow-lg animate-bounce`}>
+              <Sparkles size={14} className="text-white" />
+            </div>
           </div>
-        </div>
-      </button>
+        </button>
+      ) : (
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className={`fixed bottom-6 right-6 z-50 w-16 h-16 rounded-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
+            isDark 
+              ? 'bg-gradient-to-br from-purple-600 to-purple-700 shadow-2xl shadow-purple-500/50' 
+              : 'bg-gradient-to-br from-purple-500 to-purple-600 shadow-2xl shadow-purple-500/30'
+          } animate-pulse`}
+        >
+          <div className="relative w-full h-full flex items-center justify-center">
+            <MessageCircle size={28} className="text-white" />
+            <div className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center ${
+              isDark ? 'bg-yellow-500' : 'bg-yellow-400'
+            } shadow-lg animate-bounce`}>
+              <Sparkles size={14} className="text-white" />
+            </div>
+          </div>
+        </button>
+      )}
 
       {/* Chat Window con diseño mejorado */}
       {isOpen && (
-        <div className={`fixed bottom-28 right-6 z-40 w-[440px] h-[650px] rounded-3xl overflow-hidden transition-all duration-300 flex flex-col backdrop-blur-xl ${
+        <div className={`fixed bottom-4 right-6 z-40 w-[440px] max-w-[95vw] h-[750px] max-h-[85vh] rounded-3xl overflow-hidden transition-all duration-300 flex flex-col backdrop-blur-xl ${
           isDark 
             ? 'bg-gray-900/95 shadow-2xl shadow-black/50 border border-gray-800' 
             : 'bg-white/95 shadow-2xl shadow-gray-900/20 border border-gray-200'
@@ -190,6 +245,19 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                 >
                   <Trash2 size={18} />
                 </button>
+                {/* Cerrar ventana del chat */}
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className={`p-2 rounded-xl transition-all hover:scale-110 ${
+                    isDark 
+                      ? 'hover:bg-gray-800 text-gray-400 hover:text-white' 
+                      : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
+                  }`}
+                  title="Cerrar"
+                  aria-label="Cerrar chat"
+                >
+                  <X size={18} />
+                </button>
               </div>
             </div>
           </div>
@@ -197,10 +265,13 @@ export default function ChatBot({ isDark }: ChatBotProps) {
           {/* Messages area con scroll mejorado */}
           <div 
             ref={listRef} 
-            className={`flex-1 p-5 space-y-4 overflow-y-auto ${
+            className={`flex-1 px-4 py-4 space-y-3 overflow-y-auto ${
               isDark ? 'bg-gray-900/50' : 'bg-gray-50/50'
             }`}
             style={{
+              maxHeight: 'calc(100vh - 480px)',
+              minHeight: '280px',
+              scrollBehavior: 'smooth',
               scrollbarWidth: 'thin',
               scrollbarColor: isDark ? '#4B5563 transparent' : '#D1D5DB transparent'
             }}
@@ -310,10 +381,10 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                   
                   {/* Mensaje */}
                   <div className="flex flex-col gap-1">
-                    <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${getMessageStyle(m)} ${
+                    <div className={`px-5 py-3.5 rounded-2xl text-sm leading-normal ${getMessageStyle(m)} ${
                       m.isUser ? 'rounded-tr-md' : 'rounded-tl-md'
                     } transition-all duration-200 hover:scale-[1.02]`}>
-                      <div className="whitespace-pre-wrap break-words">{m.text}</div>
+                      {formatMessage(m.text)}
                     </div>
                     
                     {/* Badge de tipo de mensaje */}
@@ -350,16 +421,21 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                       ? 'bg-gray-800/90 border border-gray-700/50' 
                       : 'bg-white border border-gray-200 shadow-sm'
                   }`}>
-                    <div className="flex gap-2">
-                      <div className={`w-2 h-2 rounded-full ${
-                        isDark ? 'bg-purple-400' : 'bg-purple-600'
-                      } animate-bounce`} style={{ animationDelay: '0ms' }} />
-                      <div className={`w-2 h-2 rounded-full ${
-                        isDark ? 'bg-purple-400' : 'bg-purple-600'
-                      } animate-bounce`} style={{ animationDelay: '150ms' }} />
-                      <div className={`w-2 h-2 rounded-full ${
-                        isDark ? 'bg-purple-400' : 'bg-purple-600'
-                      } animate-bounce`} style={{ animationDelay: '300ms' }} />
+                    <div className="flex items-center gap-3">
+                      <div className="flex gap-2">
+                        <div className={`${
+                          isDark ? 'bg-purple-400' : 'bg-purple-600'
+                        } w-2 h-2 rounded-full animate-bounce`} style={{ animationDelay: '0ms' }} />
+                        <div className={`${
+                          isDark ? 'bg-purple-400' : 'bg-purple-600'
+                        } w-2 h-2 rounded-full animate-bounce`} style={{ animationDelay: '150ms' }} />
+                        <div className={`${
+                          isDark ? 'bg-purple-400' : 'bg-purple-600'
+                        } w-2 h-2 rounded-full animate-bounce`} style={{ animationDelay: '300ms' }} />
+                      </div>
+                      <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        Apolo está pensando...
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -368,7 +444,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
           </div>
 
           {/* Quick Actions mejoradas */}
-          <div className={`p-4 border-t ${isDark ? 'border-gray-800 bg-gray-900/80' : 'border-gray-200 bg-white/80'} backdrop-blur-sm`}>
+            <div className={`p-4 border-t ${isDark ? 'border-gray-800 bg-gray-900/80' : 'border-gray-200 bg-white/80'} backdrop-blur-sm`}>
             <p className={`text-xs font-semibold mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
               Acciones Rápidas
             </p>
