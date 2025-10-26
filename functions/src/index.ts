@@ -9,6 +9,8 @@
 
 import { setGlobalOptions } from "firebase-functions/v2/options";
 export { chat } from './chat/chatHandler';
+export { analisisSemanalGenerar, analisisSemanalProgramado } from './analisisSemanal';
+export { generateInsights } from './generateInsights';
 
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript

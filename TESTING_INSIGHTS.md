@@ -71,3 +71,32 @@ npm run dev
   - Proteína y recuperación (energía del día siguiente) en días consecutivos de entrenamiento
   - Consistencia calórica (CV) y energía promedio
 - Asegúrate de que los datos de prueba caigan dentro de los últimos 14 días y que haya entrenamientos registrados esos días; de lo contrario, no se incluirán en las correlaciones.
+
+## Migración de usuario demo (una sola vez)
+
+Si tienes un documento legacy con ID incorrecto (por ejemplo `users/GCvWgGwOI4On76LapgBd`), ejecuta este script en la consola del navegador con la app cargada para migrarlo al UID correcto:
+
+```javascript
+(async () => {
+  try {
+    console.log('🔄 Migrando usuario demo...');
+    const { doc, getDoc, setDoc } = await import('firebase/firestore');
+    const { db } = await import('./src/3-acceso-datos/firebase/config.ts');
+    const oldDoc = await getDoc(doc(db, 'users', 'GCvWgGwOI4On76LapgBd'));
+    if (oldDoc.exists()) {
+      const data = oldDoc.data();
+      const correctUid = data.userId || '37MQrFZbuqTHJ9qfb9BHbMhx3q83';
+      await setDoc(doc(db, 'users', correctUid), data);
+      console.log('✅ Usuario migrado a:', correctUid);
+    } else {
+      console.warn('El documento legacy no existe. Nada que migrar.');
+    }
+  } catch (e) {
+    console.error('Error:', e);
+  }
+})();
+```
+
+Tras ejecutar la migración, recarga la app y verifica que:
+- En consola aparezca `✅ [getUserProfile] Perfil encontrado` en la vista de correlaciones.
+- Ya no se vea el mensaje de fallback y se llame a la Function `generateInsights`.
