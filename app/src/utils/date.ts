@@ -1,4 +1,9 @@
 // Utilidades de fecha compartidas
+// ------------------------------------------------------------
+// - formatDateYYYYMMDD: genera YYYY-MM-DD en UTC (evita problemas de zona horaria)
+//   Ejemplo: 2025-10-29
+// - calculateAge: acepta string (YYYY-MM-DD), Date o Timestamp-like { toDate }
+//   y devuelve una edad válida con fallback si los datos son inconsistentes.
 
 // YYYY-MM-DD en UTC para consistencia entre zonas horarias
 export function formatDateYYYYMMDD(d: Date): string {
@@ -29,7 +34,7 @@ export function calculateAge(
       birthDate = isNaN(d.getTime()) ? null : d;
     }
 
-    if (!birthDate) return fallback;
+  if (!birthDate) return fallback; // Formato inválido
 
     const today = new Date();
     let age = today.getFullYear() - birthDate.getFullYear();
@@ -37,7 +42,7 @@ export function calculateAge(
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
       age--;
     }
-    if (!Number.isFinite(age) || age < 0 || age > 110) return fallback;
+    if (!Number.isFinite(age) || age < 0 || age > 110) return fallback; // Sanitiza edades imposibles
     return age;
   } catch {
     return fallback;

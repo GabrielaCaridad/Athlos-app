@@ -1,3 +1,8 @@
+/**
+ * Pantalla de carga inicial
+ * - Se muestra mientras se resuelve el estado de autenticación (AuthProvider).
+ * - Usa animaciones suaves y respeta el modo `isDark`.
+ */
 // LoadingScreen: pantalla de carga inicial mientras se resuelve la autenticación.
 import { Dumbbell } from 'lucide-react';
 

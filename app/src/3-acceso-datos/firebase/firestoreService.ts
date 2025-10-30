@@ -1,3 +1,13 @@
+/*
+  Firestore services: perfiles, alimentos, entrenamientos y plantillas
+  ------------------------------------------------------------
+  Capa de acceso a datos de Firebase (Firestore). Agrupa servicios
+  para:
+  - userService: perfil del usuario y cálculos de personalización
+  - foodService: CRUD de alimentos (colección 'foods')
+  - workoutService: CRUD y métricas de entrenamientos (colección 'workouts')
+  - workoutTemplateService: plantillas de entreno del usuario
+*/
 // Firestore services: user profiles, foods, workouts
 import { 
   collection, // Para referenciar colecciones
@@ -25,19 +35,19 @@ export interface UserProfile {
   xp: number; // Puntos de experiencia acumulados
   createdAt: Timestamp; // Fecha de creación del perfil
 
-  // 🆕 Datos físicos para personalización
+  // Datos físicos para personalización
   dateOfBirth?: string; // YYYY-MM-DD format
   gender?: 'male' | 'female' | 'other' | 'prefer_not_to_say';
   currentWeight?: number; // kg
   height?: number; // cm
 
-  // 🆕 Objetivos del usuario
+  // Objetivos del usuario
   primaryGoal?: 'lose_weight' | 'maintain_weight' | 'gain_muscle' | 'improve_performance' | 'general_health';
   targetWeight?: number; // kg, opcional
   activityLevel?: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
   workoutsPerWeek?: number; // 1-7 días
 
-  // 🆕 Nutrición calculada automáticamente
+  // Nutrición calculada automáticamente
   dailyCalorieTarget?: number; // kcal calculadas según objetivo
   macroTargets?: {
     protein: number; // gramos
@@ -45,11 +55,11 @@ export interface UserProfile {
     fats: number;
   };
 
-  // 🆕 Preferencias
+  // Preferencias
   dietaryRestrictions?: string[]; // ej: ["vegetariano", "sin gluten"]
   preferredWorkoutTime?: 'morning' | 'afternoon' | 'evening';
 
-  // 🆕 Metadatos
+  // Metadatos
   updatedAt?: Timestamp; // Timestamp de última actualización
 }
 

@@ -1,3 +1,16 @@
+/**
+ * Panel de Insights personales
+ *
+ * Propósito
+ * - Mostrar una lista de insights generados a partir de los datos del usuario.
+ * - Gestiona estados: cargando, vacío (sin datos suficientes) y lista ordenada.
+ *
+ * Detalles
+ * - Orden de prioridad: logro (achievement) → patrón (pattern) → recomendación (recommendation).
+ *   En empate, se muestran primero los más recientes.
+ * - Modo oscuro/claro: clases de Tailwind condicionadas por `isDark`.
+ * - `hideHeader` permite reusar el panel sin encabezado externo.
+ */
 import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
 import InsightCard from './InsightCard';
 import { Brain } from 'lucide-react';
@@ -19,6 +32,7 @@ function sortInsights(a: PersonalInsight, b: PersonalInsight): number {
 }
 
 export default function InsightsPanel({ insights, loading, isDark, hideHeader }: InsightsPanelProps) {
+  // Estado de carga: spinner compacto con mensaje
   if (loading) {
     return (
       <div className={[
@@ -37,6 +51,7 @@ export default function InsightsPanel({ insights, loading, isDark, hideHeader }:
     );
   }
 
+  // Estado vacío: CTA para incentivar registro (placeholder de acción)
   if (!insights || insights.length === 0) {
     return (
       <div className={[
@@ -74,6 +89,7 @@ export default function InsightsPanel({ insights, loading, isDark, hideHeader }:
     );
   }
 
+  // Orden estable y determinista antes de renderizar
   const sorted = [...insights].sort(sortInsights);
 
   return (

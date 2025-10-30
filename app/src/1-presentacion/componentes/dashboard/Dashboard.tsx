@@ -1,3 +1,21 @@
+/**
+ * Dashboard principal de inicio
+ *
+ * Qué muestra
+ * - Progreso de hoy hacia el objetivo calórico diario (desde el perfil del usuario).
+ * - Resumen semanal compacto: comidas de hoy, entrenamientos de la semana, energía promedio, cantidad de insights.
+ * - Último insight destacado y accesos rápidos a secciones clave (Alimentación, Entrenamientos, Correlaciones).
+ * - Aviso de análisis semanal proactivo (si hay uno sin leer) con acceso directo al chatbot.
+ *
+ * De dónde salen los datos
+ * - useUserData(uid, 30): alimentos y entrenamientos recientes, en tiempo real (30 días).
+ * - userService.getUserProfile: configuración del usuario (p. ej., dailyCalorieTarget).
+ * - usePersonalInsights(uid): lista de insights calculados a partir de TUS datos.
+ *
+ * Notas
+ * - Evitamos cálculos costosos: solo derivamos métricas locales cuando cambian foods/workouts.
+ * - createdAt puede venir como Date o Timestamp (Firestore): se normaliza a Date antes de comparar.
+ */
 import { useEffect, useState } from 'react';
 import { Utensils, Dumbbell, Zap, Brain, TrendingUp } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -66,6 +84,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
     // Derivar métricas locales cuando los datos cambian (en tiempo real)
     try {
       setLoading(true);
+      // 1) Hoy: total de calorías y número de comidas
       const todayStr = new Date().toISOString().split('T')[0];
       const todaysFoods = foods.filter(f => f.date === todayStr) as FoodEntryLite[];
       const caloriesSum = todaysFoods.reduce((sum, f) => sum + (f.calories || 0), 0);
@@ -80,6 +99,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
         used: calorieTarget
       });
 
+      // 2) Últimos 7 días: cantidad de entrenamientos y energía promedio post-entreno
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
       const recentWorkouts = workouts.filter((w) => {
@@ -207,6 +227,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
           <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
             🎯 Progreso de Hoy
           </h3>
+          {/* Porcentaje respecto al objetivo calórico diario */}
           <span className={`text-2xl font-bold ${
             totalCaloriesToday >= calorieTarget * 0.9 
               ? 'text-green-500' 

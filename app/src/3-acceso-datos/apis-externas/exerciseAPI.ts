@@ -1,5 +1,14 @@
-// exerciseAPI: integración con ExerciseDB (RapidAPI) y adaptación a formato interno.
-// Incluye caché sencillo, manejo de errores y utilidades de mapeo/dificultad.
+/*
+  exerciseAPI
+  ------------------------------------------------------------
+  Integración con ExerciseDB (RapidAPI). Adapta los ejercicios al formato
+  interno, traduce equipamiento/músculos a español y estima dificultad,
+  categoría y calorías por minuto. Incluye caché en memoria y manejo de
+  errores específico por códigos HTTP.
+
+
+*/
+
 // Configuración de la API
 const RAPIDAPI_KEY = import.meta.env.VITE_RAPIDAPI_KEY as string | undefined;
 const RAPIDAPI_HOST = 'exercisedb.p.rapidapi.com';
@@ -211,10 +220,11 @@ const adaptExercise = (exercise: ExerciseDBExercise): AdaptedExercise => {
   };
 };
 
-// Función para realizar peticiones HTTP con manejo de errores mejorado
+// Realiza peticiones HTTP con manejo de errores (429/401/403) y logging básico
 const makeRequest = async (url: string): Promise<unknown> => {
   if (!RAPIDAPI_KEY) {
-    throw new Error('');
+    // Sin clave -> error explícito para guiar configuración
+    throw new Error('RAPIDAPI_KEY no configurada');
   }
   console.log('Making request to:', url);
   

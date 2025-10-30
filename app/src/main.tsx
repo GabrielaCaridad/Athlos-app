@@ -1,3 +1,10 @@
+/**
+ * Punto de entrada de la app
+ *
+ * - Carga estilos globales y configura Firebase (`config`).
+ * - Provee contexto de autenticación (AuthProvider) y enrutamiento (BrowserRouter).
+ * - Monta el contenedor principal `App`.
+ */
 // Punto de entrada: monta la app y aplica estilos globales.
 import { StrictMode } from 'react';
 import { BrowserRouter } from 'react-router-dom';

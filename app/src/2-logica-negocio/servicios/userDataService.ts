@@ -1,3 +1,13 @@
+// userDataService
+// ------------------------------------------------------------
+// Suscripción en tiempo real a datos del usuario para una ventana
+// de tiempo reciente. Devuelve workouts y foods de forma reactiva
+// en un único callback. Diseñado para dashboards en vivo.
+// Notas:
+// - Rango de foods por string YYYY-MM-DD (incluye ambos extremos).
+// - Rango de workouts por Timestamp (createdAt >= start).
+// - Emitimos en cada snapshot combinado para evitar estados inconsistentes.
+//-------------------------------------------------------------
 import { collection, onSnapshot, orderBy, query, where, Timestamp, Unsubscribe } from 'firebase/firestore';
 import { db } from '../../3-acceso-datos/firebase/config';
 import type { WorkoutSession } from '../../3-acceso-datos/firebase/firestoreService';
@@ -9,6 +19,7 @@ export type UserData = {
 };
 
 export function subscribeUserData(userId: string, days: number, cb: (data: UserData) => void): Unsubscribe {
+  // Ventana móvil desde medianoche local de hoy hacia atrás N días
   const today = new Date();
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   start.setDate(start.getDate() - Math.max(1, days));
@@ -19,6 +30,7 @@ export function subscribeUserData(userId: string, days: number, cb: (data: UserD
   let workouts: WorkoutSession[] = [];
   let foods: UserFoodEntry[] = [];
 
+  // Emite el estado combinado actual
   const maybeEmit = () => cb({ workouts, foods });
 
   const qWorkouts = query(

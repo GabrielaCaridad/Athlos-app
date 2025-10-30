@@ -1,3 +1,17 @@
+/**
+ * Panel de Progreso personal
+ *
+ * Qué aporta
+ * - Muestra tu avance hacia un peso objetivo (desde el perfil), con tendencia y velocidad.
+ * - Gráfico de peso de las últimas 12 semanas + línea de tendencia (regresión lineal simple).
+ * - Heatmap de consistencia (30 días): nutrición cerca del objetivo ±10% y/o entrenamientos.
+ * - Si tu objetivo es ganar músculo, muestra volumen levantado semanal.
+ *
+ * Flujo de datos
+ * - userService.getUserProfile: objetivo principal y targetWeight.
+ * - obtenerResumenProgreso / calcularTendencia / obtenerHistorialPeso: KPIs y series de peso.
+ * - userFoodService + workoutService: para construir el heatmap de 30 días.
+ */
 import { useEffect, useMemo, useState } from 'react';
 import { ResponsiveContainer, LineChart, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, Line, BarChart, Bar } from 'recharts';
 import { useAuth } from '../../hooks/useAuth';
@@ -13,7 +27,9 @@ type Props = { isDark: boolean };
 type Estado = 'loading' | 'insufficient_data' | 'success';
 
 // Reemplazado por util compartida formatDateYYYYMMDD
+// Utilidad local: suma/resta días a una fecha (manteniendo hora base)
 function addDays(d: Date, days: number) { const x = new Date(d); x.setDate(x.getDate() + days); return x; }
+// Agrupa por semana ISO (YYYY-Www) usando UTC para evitar desalineaciones por zona horaria
 function weekKey(d: Date) {
   const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const day = x.getUTCDay() || 7;
@@ -23,6 +39,7 @@ function weekKey(d: Date) {
   return `${x.getUTCFullYear()}-W${String(weekNo).padStart(2,'0')}`;
 }
 
+// Regresión lineal simple para estimar línea de tendencia en el gráfico
 function linearRegression(y: number[]): { a: number; b: number } {
   const n = y.length;
   if (n === 0) return { a: 0, b: 0 };
@@ -135,6 +152,7 @@ export default function PanelProgreso({ isDark }: Props) {
             userFoodService.getDailyCalories(user.uid, dateStr).catch(() => 0),
             workoutService.getWorkoutsByDate(user.uid, dateStr).catch(() => [])
           ]);
+          // Consideramos “nutrición en rango” si hay objetivo calórico y se está ±10%, o si al menos hay registro calórico
           const inNutrition = profile?.dailyCalorieTarget ? (Math.abs(calories - profile.dailyCalorieTarget) <= profile.dailyCalorieTarget * targetTolerance) : calories > 0;
           const didWorkout = (workouts?.length || 0) > 0;
           if (didWorkout) workoutsCount += 1;
@@ -169,6 +187,7 @@ export default function PanelProgreso({ isDark }: Props) {
     load();
   }, [user?.uid]);
 
+  // Serie lista para Recharts: datos semanales + línea de tendencia del mismo largo
   const weeklyChartData = useMemo(() => {
     if (pesoSemanas.length === 0) return [] as Array<{ semana: string; peso: number; tendencia: number }>;
     return pesoSemanas.map((w, i) => ({ semana: w.semana, peso: w.peso, tendencia: tendenciaSerie[i] ?? w.peso }));

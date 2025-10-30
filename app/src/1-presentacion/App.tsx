@@ -1,3 +1,4 @@
+
 // App: contenedor principal de la interfaz.
 // - Muestra login o la aplicación según autenticación.
 // - Gestiona navegación entre Alimentación y Entrenamientos.

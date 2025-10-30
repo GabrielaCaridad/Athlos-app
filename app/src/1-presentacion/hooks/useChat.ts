@@ -1,9 +1,16 @@
+// En este hook centralizo la lógica del chat con Apolo.
+// Importo hooks de React para manejar estado, efectos y referencias.
 import { useCallback, useEffect, useRef, useState } from 'react';
+// Uso las Cloud Functions de Firebase para enviar los mensajes al backend.
 import { httpsCallable, HttpsCallable } from 'firebase/functions';
+// Importo la instancia de Functions inicializada en mi proyecto Firebase.
 import { functions } from '../../3-acceso-datos/firebase/config';
+// También necesito el usuario actual para validar sesión antes de enviar mensajes.
 import { auth } from '../../3-acceso-datos/firebase/config';
 
 export interface Message {
+  // Cada mensaje que se muestra en el chat tiene un id, el texto y su metadata.
+  // "isUser" me ayuda a diferenciar visualmente si lo envió el usuario o el asistente.
   id: string;
   text: string;
   isUser: boolean;
@@ -23,26 +30,38 @@ type ChatResult = {
   wasFromCache?: boolean;
 };
 
+// Este es el payload que envío a la Cloud Function: el texto del mensaje y, opcionalmente,
+// el identificador de sesión del chat para mantener el contexto.
 type ChatPayload = { message: string; sessionId?: string };
 
 export const useChat = () => {
+  // Mensajes acumulados en la conversación
   const [messages, setMessages] = useState<Message[]>([]);
+  // Estado de carga mientras espero la respuesta del backend
   const [isLoading, setIsLoading] = useState(false);
+  // Mensaje de error para mostrar en el UI cuando algo falla
   const [error, setError] = useState<string | null>(null);
+  // Identificador de sesión que me permite mantener el contexto del chat en el backend
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // Flag para indicar si el usuario alcanzó un límite de uso
   const [isRateLimited, setIsRateLimited] = useState(false);
+  // Referencia al último mensaje del usuario aún pendiente (útil para reintentos, etc.)
   const pendingUserMsgRef = useRef<Message | null>(null);
+  // Mantengo una referencia a la función callable para evitar recrearla en cada render
   const chatFnRef = useRef<HttpsCallable<ChatPayload, ChatResult> | null>(null);
 
+  // Inicializo la Cloud Function de chat una sola vez al montar el hook.
   useEffect(() => {
   chatFnRef.current = httpsCallable<ChatPayload, ChatResult>(functions, 'chat');
     console.log('✅ Chat function initialized');
   }, []);
 
+  // Agrego un mensaje nuevo al arreglo de mensajes.
   const addMessage = useCallback((m: Message) => {
     setMessages(prev => [...prev, m]);
   }, []);
 
+  // Envía el mensaje al backend, valida sesión y maneja errores comunes.
   const sendMessage = useCallback(async (text: string) => {
     const content = (text || '').trim();
     if (!content) return;
@@ -117,6 +136,7 @@ export const useChat = () => {
       addMessage(botMsg);
 
     } catch (e: unknown) {
+      // Manejo de errores con mensajes más claros para el usuario final
       const err = e as { code?: string; message?: string };
       console.error('❌ Error completo:', err);
       console.error('❌ Error code:', err?.code);
@@ -155,12 +175,14 @@ export const useChat = () => {
     }
   }, [addMessage, sessionId]);
 
+  // Limpia el historial del chat y estados de error/límite
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
     setIsRateLimited(false);
   }, []);
 
+  // Reintenta enviando el último mensaje del usuario si existe
   const retryLastMessage = useCallback(() => {
     const lastUser = [...messages].reverse().find(m => m.isUser);
     if (lastUser) {

@@ -1,6 +1,11 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-// Servicio mínimo para mensajes proactivos (placeholder)
-// Implementación no-op para mantener compatibilidad del Dashboard sin depender de chatService/apoloService eliminados.
+/*
+  proactiveService (placeholder)
+  ------------------------------------------------------------
+  Servicio mínimo para mensajes proactivos. Actualmente no-op para
+  mantener compatibilidad en Dashboard sin depender de servicios
+  eliminados. 
+*/
 
 export type ProactiveMessage = {
   id: string;

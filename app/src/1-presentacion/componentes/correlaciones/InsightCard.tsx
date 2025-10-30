@@ -1,3 +1,16 @@
+/**
+ * Tarjeta de Insight
+ *
+ * Qué renderiza
+ * - Título + descripción del insight.
+ * - Evidencia (lista breve) y una acción sugerida (“Qué hacer”).
+ * - Estilos y colores cambian según el tipo: pattern, recommendation, achievement.
+ *
+ * Detalles
+ * - `typeStyles` define borde, fondo e icono por tipo y tema (oscuro/claro).
+ * - `confidenceBg` colorea el bloque de acción según la confianza (high/medium/low).
+ * - `HeaderIcon` elige un ícono representativo por tipo.
+ */
 import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
 import { TrendingUp, Award, Lightbulb, CheckCircle } from 'lucide-react';
 
@@ -78,7 +91,7 @@ export default function InsightCard({ insight, isDark }: InsightCardProps) {
         {insight.description}
       </p>
 
-      {/* Evidencia */}
+      {/* Evidencia: lista de puntos que respaldan el insight */}
       <div className={[
         'rounded-lg border',
         isDark ? 'border-gray-700' : 'border-gray-200',
@@ -97,7 +110,7 @@ export default function InsightCard({ insight, isDark }: InsightCardProps) {
         </ul>
       </div>
 
-      {/* Acción / Qué hacer */}
+      {/* Acción / Qué hacer: recomendación accionable con color según confianza */}
       <div className={['rounded-lg p-3', confidenceBg(insight.confidence, isDark)].join(' ')}>
         <div className="flex items-start gap-2">
           <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />

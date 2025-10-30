@@ -1,3 +1,13 @@
+// metricsService
+// ------------------------------------------------------------
+// Construye series de datos para correlacionar nutrición y rendimiento
+// de entrenamientos. No realiza IO: recibe foods y workouts ya cargados,
+// agrega por día y clasifica por rangos de calorías.
+// Edge cases considerados:
+// - Días sin entrenamientos: se omiten (no aportan a correlación rendimiento).
+// - Fechas: se unifican a YYYY-MM-DD a partir de createdAt/completedAt.
+// - Macros: se agregan con util compartida y se redondean donde tiene sentido.
+//-------------------------------------------------------------
 import type { WorkoutSession } from '../../3-acceso-datos/firebase/firestoreService';
 import type { UserFoodEntry } from '../../3-acceso-datos/firebase/foodDataService';
 import { aggregateMacros } from '../../utils/nutrition';
@@ -15,6 +25,7 @@ export interface CorrelationDataPoint {
   category: CalorieCategory;
 }
 
+// Etiqueta simple por zona calórica (ajustable según objetivos)
 const categorizeCalories = (cal: number): CalorieCategory => (cal < 1800 ? 'bajo' : cal <= 2200 ? 'optimo' : 'exceso');
 
 function getWorkoutDateString(w: WorkoutSession): string | null {
@@ -24,11 +35,12 @@ function getWorkoutDateString(w: WorkoutSession): string | null {
 }
 
 export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFoodEntry[], days: number = 14): CorrelationDataPoint[] {
+  // Punto de inicio: medianoche local de hoy
   const today = new Date();
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const dayMs = 24 * 60 * 60 * 1000;
 
-  // Group foods by date
+  // Agrupar foods por fecha (YYYY-MM-DD)
   const foodsByDate = new Map<string, UserFoodEntry[]>();
   for (const f of foods) {
     const d = f.date; // already YYYY-MM-DD
@@ -38,7 +50,7 @@ export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFood
     foodsByDate.set(d, arr);
   }
 
-  // Group workouts by date
+  // Agrupar workouts por fecha (usando completedAt > createdAt)
   const workoutsByDate = new Map<string, WorkoutSession[]>();
   for (const w of workouts) {
     const d = getWorkoutDateString(w);
@@ -53,14 +65,14 @@ export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFood
     const d = new Date(start.getTime() - i * dayMs);
     const dateStr = d.toISOString().slice(0, 10);
     const dayWorkouts = workoutsByDate.get(dateStr) || [];
-    if (dayWorkouts.length === 0) continue; // only days with workouts
+    if (dayWorkouts.length === 0) continue; // Solo días con workouts para correlación
 
     const dayFoods = foodsByDate.get(dateStr) || [];
-  const calories = dayFoods.reduce((s, f) => s + (f.calories || 0), 0);
-  const { protein: pSum, carbs: cSum, fats: fSum } = aggregateMacros(dayFoods);
-  const protein = Math.round(pSum);
-  const carbs = Math.round(cSum);
-  const fats = Math.round(fSum);
+    const calories = dayFoods.reduce((s, f) => s + (f.calories || 0), 0);
+    const { protein: pSum, carbs: cSum, fats: fSum } = aggregateMacros(dayFoods);
+    const protein = Math.round(pSum);
+    const carbs = Math.round(cSum);
+    const fats = Math.round(fSum);
 
     const perfAvg = dayWorkouts.reduce((s, w) => s + (w.performanceScore || 0), 0) / (dayWorkouts.length || 1);
     const performance = Math.round(perfAvg || 0);
@@ -83,7 +95,7 @@ export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFood
     });
   }
 
-  // chronological order asc
+  // Orden cronológico ascendente
   return result.reverse();
 }
 
@@ -97,6 +109,7 @@ export function hasMinimumDataForAnalysis(
   weights: Array<{ fecha: string }> = [],
   minDays: number = 7
 ): { daysWithData: number; ok: boolean } {
+  // Conjunto de fechas únicas con al menos un dato (foods/workouts/peso)
   const uniqueDates = new Set<string>();
   for (const f of foods) {
     if (f?.date) uniqueDates.add(f.date);

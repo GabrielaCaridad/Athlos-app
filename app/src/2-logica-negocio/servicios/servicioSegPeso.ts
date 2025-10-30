@@ -1,3 +1,10 @@
+// servicioSegPeso
+// ------------------------------------------------------------
+// Gestión de registros de peso del usuario: alta/actualización diaria,
+// obtención de historial, cálculo de tendencia y resumen de progreso.
+// Decisiones clave:
+// - La fecha se maneja como string YYYY-MM-DD para filtros simples.
+//-------------------------------------------------------------
 import { collection, getDocs, query, where, orderBy, limit, addDoc, updateDoc, doc, Timestamp } from 'firebase/firestore';
 import { db } from '../../3-acceso-datos/firebase/config';
 import { userService } from '../../3-acceso-datos/firebase/firestoreService';
@@ -23,14 +30,17 @@ function todayStr(): string {
   return new Date().toISOString().split('T')[0];
 }
 
+// Asegura que un número quede dentro de [min, max]
 function clamp(n: number, min: number, max: number) { return Math.max(min, Math.min(max, n)); }
 
+// Devuelve la fecha YYYY-MM-DD de hace N días desde hoy
 function daysAgoStr(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().split('T')[0];
 }
 
+// Obtiene el último registro de peso del usuario en o antes de cierta fecha
 async function getLastRecordBeforeOrOn(userId: string, dateStr: string): Promise<RegistroPeso | null> {
   const col = collection(db, 'registros_peso');
   const qy = query(
@@ -54,6 +64,7 @@ async function getLastRecordBeforeOrOn(userId: string, dateStr: string): Promise
   };
 }
 
+// Crear/actualizar registro de peso para una fecha. También actualiza el perfil.
 export async function registrarPeso(userId: string, peso: number, fecha: string, notas?: string): Promise<void> {
   // Validaciones
   if (!userId) throw new Error('userId requerido');
@@ -99,6 +110,7 @@ export async function registrarPeso(userId: string, peso: number, fecha: string,
   await userService.updateUserProfile(userId, { currentWeight: peso, updatedAt: Timestamp.now() });
 }
 
+// Historial de peso de los últimos N días (hasta 365)
 export async function obtenerHistorialPeso(userId: string, dias: number): Promise<RegistroPeso[]> {
   if (!userId) return [];
   const from = daysAgoStr(clamp(dias, 1, 365));
@@ -123,6 +135,7 @@ export async function obtenerHistorialPeso(userId: string, dias: number): Promis
   });
 }
 
+// Calcula tendencia y velocidad (kg/semana) basada en 7 y 30 días
 export async function calcularTendencia(userId: string): Promise<TendenciaPeso> {
   const registros = await obtenerHistorialPeso(userId, 60); // suficiente para 30 días
   if (registros.length === 0) {
@@ -168,6 +181,7 @@ export async function calcularTendencia(userId: string): Promise<TendenciaPeso> 
   };
 }
 
+// Resumen de progreso global: inicial/actual/objetivo y % completado
 export async function obtenerResumenProgreso(userId: string): Promise<{ pesoInicial: number; pesoActual: number; pesoObjetivo: number; pesoPerdido: number; pesoFaltante: number; porcentajeCompletado: number; }> {
   const col = collection(db, 'registros_peso');
   const qAsc = query(col, where('userId', '==', userId), orderBy('fecha', 'asc'), limit(1));
@@ -200,7 +214,7 @@ export async function obtenerResumenProgreso(userId: string): Promise<{ pesoInic
   };
 }
 
-// Helper para auto-registro desde configuración
+// Helper: auto-registro desde configuración (si hay currentWeight)
 export async function autoRegistroDesdeConfiguracion(userId: string, currentWeight?: number, fecha?: string) {
   if (!userId || typeof currentWeight !== 'number') return;
   const f = fecha || todayStr();

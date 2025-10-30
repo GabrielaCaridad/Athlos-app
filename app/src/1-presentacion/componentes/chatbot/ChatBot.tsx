@@ -1,3 +1,6 @@
+// En esta parte inicial importo los hooks de React, los iconos que uso en la UI
+// y mis propios hooks de la app para conectar el componente con la autenticación,
+// la lógica del chat y los insights personales del usuario.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageCircle, X, Send, Zap, Utensils, Dumbbell, TrendingUp, Trash2, RefreshCcw, Sparkles, Award, Target } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -9,14 +12,22 @@ interface ChatBotProps {
 }
 
 export default function ChatBot({ isDark }: ChatBotProps) {
+  // Aquí obtengo el usuario autenticado. Si no hay usuario, no muestro el chat.
   const { user } = useAuth();
+  // Estado de apertura del chat (la burbuja principal solo abre, el cierre va dentro del chat)
   const [isOpen, setIsOpen] = useState(false);
+  // Estado del texto de entrada
   const [inputText, setInputText] = useState('');
+  // Hook del chat: mensajes, estados de carga/errores y acciones
   const { messages, isLoading, error, sendMessage, clearMessages, retryLastMessage, isRateLimited } = useChat();
+  // Refs para manejar scroll y foco en el input
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Insights personales para contextualizar acciones rápidas
   const { insights } = usePersonalInsights(user?.uid || '');
 
+  // Acciones rápidas: defino atajos que el usuario puede pulsar para rellenar el input.
+  // Si el sistema detecta un insight de carbohidratos, adapto el tercer botón para que sea más útil.
   const quickActions = useMemo(() => {
     const baseActions = [
       { text: "¿Qué comer antes de entrenar?", icon: Utensils, category: 'nutrition', gradient: 'from-green-500 to-emerald-600' },
@@ -38,10 +49,13 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     return baseActions;
   }, [insights]);
 
+  // Esta función se encarga de enviar el mensaje actual al asistente.
+  // Valido que no esté vacío y que no haya una petición en curso.
   const handleSend = async () => {
     if (!inputText.trim() || isLoading) return;
     
-    // ✅ VALIDACIÓN FRONTEND - Advertencia preventiva
+    // Aquí hago una validación preventiva en el frontend para detectar
+    // preguntas fuera de alcance y registrar una advertencia (no bloquea el envío).
     const lower = inputText.toLowerCase();
     const outOfScopeWarnings = [
       'pelo', 'cabello', 'tinte', 'pintar',
@@ -59,11 +73,14 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     setInputText('');
   };
 
+  // Este handler completa el input con el texto de una acción rápida y deja el foco en el campo.
   const handleQuickAction = (actionText: string) => {
     setInputText(actionText);
     inputRef.current?.focus();
   };
 
+  // En esta función defino los estilos visuales de cada mensaje según su tipo.
+  // Diferencio mensajes del usuario, recomendaciones, logros, errores y respuestas generales.
   const getMessageStyle = (message: Message) => {
     if (message.isUser) {
       return isDark 
@@ -94,6 +111,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
       : 'bg-white text-gray-800 border border-gray-200 shadow-md shadow-gray-200/50';
   };
 
+  // Este helper agrega una pequeña etiqueta para resaltar si la respuesta es una recomendación o un logro.
   const getMessageBadge = (type: Message['type']) => {
     if (type === 'recommendation') {
       return (
@@ -114,6 +132,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     return null;
   };
 
+  // Efecto: cada vez que llegan nuevos mensajes (o abro el chat) hago scroll al final
+  // para que el usuario siempre vea lo más reciente.
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTo({
@@ -123,13 +143,15 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     }
   }, [messages, isOpen]);
 
+  // Efecto: cuando abro el chat, enfoco el input para que pueda escribir de inmediato.
   useEffect(() => {
     if (isOpen && inputRef.current) {
       inputRef.current.focus();
     }
   }, [isOpen]);
 
-  // Allow other parts of the app to open the chat
+  // Efecto: permito que otras partes de la app abran el chat emitiendo un evento global "open-chatbot".
+  // Esto facilita que, por ejemplo, un botón en otra pantalla pueda abrir la ventana del chat.
   useEffect(() => {
     const handler = () => setIsOpen(true);
     window.addEventListener('open-chatbot', handler as EventListener);
@@ -138,6 +160,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     };
   }, []);
 
+  // Helper: esta función toma un texto y lo presenta respetando párrafos y saltos de línea,
+  // para que la respuesta del asistente sea más legible.
   const formatMessage = (text: string) => {
     const paragraphs = text.split('\n\n').filter(p => p.trim());
     return (
@@ -156,34 +180,19 @@ export default function ChatBot({ isDark }: ChatBotProps) {
     );
   };
 
+  // Si no hay usuario autenticado, no muestro el componente del chat.
   if (!user) {
     return null;
   }
 
   return (
     <>
-      {/* Chat Button con animación pulse mejorada y posición dinámica */}
-      {isOpen ? (
+      {/* Botón flotante principal: solo ABRE el chat (no vuelve a cerrarlo).
+          Visualmente es una burbuja con un ícono de mensaje y un pequeño brillo.
+          Si el chat ya está abierto, no renderizo este botón para evitar confundir al usuario. */}
+      {!isOpen && (
         <button
-          onClick={() => setIsOpen(!isOpen)}
-          className={`fixed bottom-6 right-6 z-50 w-16 h-16 rounded-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
-            isDark 
-              ? 'bg-gradient-to-br from-purple-600 to-purple-700 shadow-2xl shadow-purple-500/50' 
-              : 'bg-gradient-to-br from-purple-500 to-purple-600 shadow-2xl shadow-purple-500/30'
-          }`}
-        >
-          <div className="relative w-full h-full flex items-center justify-center">
-            <X size={28} className="text-white" />
-            <div className={`absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center ${
-              isDark ? 'bg-yellow-500' : 'bg-yellow-400'
-            } shadow-lg animate-bounce`}>
-              <Sparkles size={14} className="text-white" />
-            </div>
-          </div>
-        </button>
-      ) : (
-        <button
-          onClick={() => setIsOpen(!isOpen)}
+          onClick={() => setIsOpen(true)}
           className={`fixed bottom-6 right-6 z-50 w-16 h-16 rounded-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
             isDark 
               ? 'bg-gradient-to-br from-purple-600 to-purple-700 shadow-2xl shadow-purple-500/50' 
@@ -209,7 +218,9 @@ export default function ChatBot({ isDark }: ChatBotProps) {
             : 'bg-white/95 shadow-2xl shadow-gray-900/20 border border-gray-200'
         }`}>
           
-          {/* Header mejorado con gradiente */}
+          {/* Header del chat (incluye acciones de limpiar y cerrar):
+              Aquí muestro el avatar del asistente, su estado “activo”,
+              un botón para limpiar la conversación y otro para cerrar la ventana. */}
           <div className={`relative p-5 ${
             isDark 
               ? 'bg-gradient-to-r from-purple-900/50 to-blue-900/50 border-b border-gray-800' 
@@ -241,7 +252,9 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                 </div>
               </div>
               
-              {/* Botones de acción */}
+              {/* Botones de acción: 
+                  - Papelera: limpia los mensajes y deja la conversación en blanco.
+                  - X: cierra la ventana del chat (el botón flotante principal no cierra). */}
               <div className="flex gap-2">
                 <button
                   onClick={clearMessages}
@@ -271,7 +284,9 @@ export default function ChatBot({ isDark }: ChatBotProps) {
             </div>
           </div>
 
-          {/* Messages area con scroll mejorado */}
+          {/* Zona de mensajes con scroll y animaciones:
+              Aquí renderizo todos los mensajes (usuario y asistente),
+              con un pequeño efecto al aparecer y un timestamp formateado. */}
           <div 
             ref={listRef} 
             className={`flex-1 px-4 py-4 space-y-3 overflow-y-auto ${
@@ -357,7 +372,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               </div>
             )}
             
-            {/* Mensajes con animación de entrada */}
+            {/* Aquí recorro los mensajes y los muestro con un pequeño delay para dar sensación de fluidez. */}
             {messages.map((m, index) => (
               <div 
                 key={m.id} 
@@ -365,7 +380,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                 style={{ animationDelay: `${index * 0.1}s` }}
               >
                 <div className={`flex gap-3 max-w-[85%] ${m.isUser ? 'flex-row-reverse' : 'flex-row'}`}>
-                  {/* Avatar */}
+                  {/* Avatar: si es el asistente muestro su ícono; si es el usuario, muestro su inicial. */}
                   {!m.isUser && (
                     <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
                       isDark 
@@ -388,7 +403,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                     </div>
                   )}
                   
-                  {/* Mensaje */}
+                  {/* Mensaje: el contenedor se pinta distinto según quién lo envía y el tipo de contenido. */}
                   <div className="flex flex-col gap-1">
                     <div className={`px-5 py-3.5 rounded-2xl text-sm leading-normal ${getMessageStyle(m)} ${
                       m.isUser ? 'rounded-tr-md' : 'rounded-tl-md'
@@ -396,10 +411,10 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                       {formatMessage(m.text)}
                     </div>
                     
-                    {/* Badge de tipo de mensaje */}
+                    {/* Si corresponde, muestro un badge de recomendación o logro. */}
                     {!m.isUser && getMessageBadge(m.type)}
                     
-                    {/* Timestamp */}
+                    {/* Timestamp: aquí formateo la hora en español para cada mensaje. */}
                     <span className={`text-[10px] ${m.isUser ? 'text-right' : 'text-left'} ${
                       isDark ? 'text-gray-600' : 'text-gray-400'
                     }`}>
@@ -413,7 +428,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               </div>
             ))}
             
-            {/* Typing indicator mejorado */}
+            {/* Indicador de escritura del asistente: mientras espero la respuesta, muestro puntos animados. */}
             {isLoading && (
               <div className="flex justify-start animate-fade-in">
                 <div className="flex gap-3 max-w-[85%]">
@@ -452,7 +467,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
             )}
           </div>
 
-          {/* Quick Actions mejoradas */}
+          {/* Acciones rápidas contextualizadas: botones pequeños que rellenan el input para agilizar consultas. */}
             <div className={`p-4 border-t ${isDark ? 'border-gray-800 bg-gray-900/80' : 'border-gray-200 bg-white/80'} backdrop-blur-sm`}>
             <p className={`text-xs font-semibold mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
               Acciones Rápidas
@@ -480,7 +495,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               ))}
             </div>
             
-            {/* Mensajes de error/estado */}
+              {/* Mensajes de error/estado: si hubo un error al enviar o responder, lo muestro aquí con opción de reintento. */}
             {error && (
               <div className={`mt-3 p-3 rounded-xl text-xs flex items-start gap-2 ${
                 isDark ? 'bg-red-900/30 text-red-300 border border-red-800' : 'bg-red-50 text-red-700 border border-red-200'
@@ -498,7 +513,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               </div>
             )}
             
-            {isRateLimited && (
+              {/* Si se alcanza el límite de mensajes, informo al usuario de forma clara. */}
+              {isRateLimited && (
               <div className={`mt-3 p-3 rounded-xl text-xs ${
                 isDark ? 'bg-yellow-900/30 text-yellow-300 border border-yellow-800' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'
               }`}>
@@ -507,7 +523,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
             )}
           </div>
 
-          {/* Input Area mejorada */}
+          {/* Área de entrada del usuario: aquí escribo el mensaje, muestro un contador de caracteres
+              y tengo el botón para enviar al asistente. Enter también envía el mensaje. */}
           <div className={`p-4 border-t ${isDark ? 'border-gray-800 bg-gray-900/80' : 'border-gray-200 bg-white/80'} backdrop-blur-sm`}>
             <div className="flex items-end gap-2">
               <div className="flex-1 relative">
@@ -517,6 +534,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => {
+                    // Si presiono Enter (sin Shift), envío el mensaje.
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();
@@ -532,7 +550,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                   } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 />
                 
-                {/* Character counter */}
+                {/* Contador de caracteres para no exceder el límite de 500. */}
                 <div className={`absolute right-3 bottom-1 text-[10px] ${
                   inputText.length > 450 
                     ? 'text-red-500' 
@@ -542,7 +560,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
                 </div>
               </div>
               
-              {/* Send button mejorado */}
+              {/* Botón que envía el mensaje al backend del chat a través del hook useChat. */}
               <button
                 onClick={handleSend}
                 disabled={isLoading || !inputText.trim() || inputText.length > 500}
@@ -558,7 +576,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               </button>
             </div>
             
-            {/* Disclaimer mejorado */}
+            {/* Disclaimer informativo: aclaro que el asistente es una ayuda y no reemplaza consejo profesional. */}
             <p className={`text-[10px] mt-3 text-center ${isDark ? 'text-gray-600' : 'text-gray-500'}`}>
               🤖 Apolo es un asistente AI. Consulta profesionales para asesoría médica.
             </p>
@@ -566,7 +584,8 @@ export default function ChatBot({ isDark }: ChatBotProps) {
         </div>
       )}
       
-      {/* Estilos CSS adicionales */}
+      {/* Estilos CSS adicionales (animaciones) que uso en los mensajes, el fade-in
+          y un rebote sutil para algunos elementos visuales. */}
       <style>{`
         @keyframes slide-in {
           from {

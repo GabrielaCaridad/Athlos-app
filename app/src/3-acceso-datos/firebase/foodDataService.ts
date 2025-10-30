@@ -1,6 +1,8 @@
-// foodDataService: servicios de alimentos.
-// - foodDatabaseService: base de datos de alimentos de la app (búsqueda, alta, uso, inicialización).
-// - userFoodService: entradas de alimentos por usuario (CRUD y estadísticas).
+// En este archivo concentro los servicios relacionados con alimentos.
+// - foodDatabaseService: gestiona la "base de datos" de alimentos que usa la app
+//   (agregar alimentos nuevos, buscarlos y llevar un contador de uso).
+// - userFoodService: maneja los registros de alimentos consumidos por cada usuario
+//   (crear, listar por fecha/mealType y estadísticas en rangos de fechas).
 import { 
   collection, 
   addDoc, 
@@ -13,14 +15,17 @@ import {
   where, 
   Timestamp,
   getDoc,
-  increment
+  increment,
+  startAt,
+  endAt,
+  limit as fsLimit,
+  QueryDocumentSnapshot,
+  DocumentData
 } from 'firebase/firestore';
 import { db } from './config';
 
-/**
- * Remueve propiedades undefined/null de un objeto para Firestore.
- * Firebase no permite undefined en documentos, solo omitir el campo.
- */
+// Pequeña utilidad: limpio las propiedades undefined/null antes de enviar a Firestore.
+// Firestore no admite campos undefined, así que los omito para evitar errores.
 function removeUndefinedFields<T extends Record<string, unknown>>(obj: T): Partial<T> {
   const cleaned: Partial<T> = {};
   for (const key in obj) {
@@ -32,9 +37,7 @@ function removeUndefinedFields<T extends Record<string, unknown>>(obj: T): Parti
   return cleaned;
 }
 
-/**
- * Interfaz para alimentos en la base de datos
- */
+// Estructura de un alimento en la colección "foodDatabase" de Firestore.
 export interface DatabaseFood {
   id?: string;
   name: string;
@@ -56,9 +59,7 @@ export interface DatabaseFood {
   alternativeNames?: string[];
 }
 
-/**
- * Interfaz para el registro de alimentos del usuario
- */
+// Estructura de un registro de consumo en la colección "userFoodEntries".
 export interface UserFoodEntry {
   id?: string;
   userId: string;
@@ -76,9 +77,7 @@ export interface UserFoodEntry {
   createdAt: Timestamp;
 }
 
-/**
- * Interfaz para datos de entrada al crear un alimento
- */
+// Cuando agrego un alimento a la base de datos, recibo estos datos desde la UI.
 interface CreateFoodData {
   name: string;
   calories: number;
@@ -91,10 +90,8 @@ interface CreateFoodData {
   alternativeNames?: string[];
 }
 
-/**
- * Valida que las calorías declaradas coincidan con los macronutrientes
- * 1g proteína = 4 kcal, 1g carbos = 4 kcal, 1g grasa = 9 kcal
- */
+// Función de ayuda para validar coherencia nutricional:
+// 1g proteína = 4 kcal, 1g carbos = 4 kcal, 1g grasa = 9 kcal.
 export function validateNutritionalCoherence(
   calories: number,
   protein: number,
@@ -112,27 +109,27 @@ export function validateNutritionalCoherence(
   };
 }
 
-/**
- * Servicio para manejar la base de datos de alimentos
- */
+// Servicio principal para la base de datos de alimentos (colección: foodDatabase)
 export const foodDatabaseService = {
   /**
-   * Buscar alimentos en la base de datos
+  * Buscar alimentos en Firestore de forma eficiente (server-side):
+  * - Si no hay término, traigo los más usados recientes con límite.
+  * - Si hay término, hago búsqueda por prefijo en name (startAt/endAt) y
+  *   una búsqueda exacta en alternativeNames (array-contains). Siempre con límite.
    */
   async searchFoods(searchTerm: string, limit: number = 20): Promise<DatabaseFood[]> {
     try {
-      if (!searchTerm.trim()) {
+      const trimmed = searchTerm.trim();
+      if (!trimmed) {
+        // Lista por defecto: más usados recientes, limitado en el servidor
         const q = query(
           collection(db, 'foodDatabase'),
           orderBy('usageCount', 'desc'),
-          orderBy('createdAt', 'desc')
+          orderBy('createdAt', 'desc'),
+          fsLimit(limit)
         );
-        const querySnapshot = await getDocs(q);
-        const base = querySnapshot.docs.slice(0, limit).map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as DatabaseFood[];
-        // Orden: USDA verificados primero por uso, luego personalizados
+        const snap = await getDocs(q);
+        const base = snap.docs.map(d => ({ id: d.id, ...d.data() })) as DatabaseFood[];
         return base.sort((a, b) => {
           const aVerified = (a.isVerified || a.source === 'USDA') ? 1 : 0;
           const bVerified = (b.isVerified || b.source === 'USDA') ? 1 : 0;
@@ -142,24 +139,64 @@ export const foodDatabaseService = {
         }).slice(0, limit);
       }
 
-      const q = query(collection(db, 'foodDatabase'), orderBy('usageCount', 'desc'));
-      const querySnapshot = await getDocs(q);
-      
-      const searchLower = searchTerm.toLowerCase();
-      const results = querySnapshot.docs
-        .map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }) as DatabaseFood)
-        .filter(food => {
-          const nameMatch = food.name.toLowerCase().includes(searchLower);
-          const altNamesMatch = food.alternativeNames?.some(alt => 
-            alt.toLowerCase().includes(searchLower)
-          );
-          return nameMatch || altNamesMatch;
-        });
+      // Búsqueda por prefijo en el servidor usando orderBy(name) + startAt/endAt
+      // Nota: esto es sensible a mayúsculas/minúsculas; si quiero case-insensitive real,
+      // conviene mantener un campo 'nameLower' indexado.
+      const qByName = query(
+        collection(db, 'foodDatabase'),
+        orderBy('name'),
+        startAt(trimmed),
+        endAt(trimmed + '\uf8ff'),
+        fsLimit(limit)
+      );
+      // Coincidencia exacta en alternativeNames vía array-contains (sin prefijos)
+      const qByAlt = query(
+        collection(db, 'foodDatabase'),
+        where('alternativeNames', 'array-contains', trimmed),
+        fsLimit(Math.max(1, Math.floor(limit / 2)))
+      );
 
-      // Orden: USDA verificados primero por coincidencia y uso
+      // Ejecutar en paralelo y fusionar resultados
+      const [snapName, snapAlt] = await Promise.allSettled([
+        getDocs(qByName),
+        getDocs(qByAlt)
+      ]);
+
+      const map = new Map<string, DatabaseFood>();
+      const addDocs = (docs: QueryDocumentSnapshot<DocumentData>[]) => {
+        for (const d of docs) {
+          if (!map.has(d.id)) {
+            map.set(d.id, { id: d.id, ...d.data() } as DatabaseFood);
+          }
+        }
+      };
+
+      if (snapName.status === 'fulfilled') addDocs(snapName.value.docs);
+      if (snapAlt.status === 'fulfilled') addDocs(snapAlt.value.docs);
+
+      let results = Array.from(map.values());
+
+      // Si obtengo pocos resultados, complemento con un top por uso (también limitado)
+      if (results.length < limit) {
+        try {
+          const qTop = query(
+            collection(db, 'foodDatabase'),
+            orderBy('usageCount', 'desc'),
+            fsLimit(Math.max(0, limit - results.length))
+          );
+          const snapTop = await getDocs(qTop);
+          for (const d of snapTop.docs) {
+            if (!map.has(d.id)) {
+              map.set(d.id, { id: d.id, ...d.data() } as DatabaseFood);
+            }
+          }
+          results = Array.from(map.values());
+        } catch {
+          // fallback silencioso si falta índice
+        }
+      }
+
+      // Orden de preferencia: verificados/USDA primero, luego por uso
       results.sort((a, b) => {
         const aVerified = (a.isVerified || a.source === 'USDA') ? 1 : 0;
         const bVerified = (b.isVerified || b.source === 'USDA') ? 1 : 0;
@@ -167,10 +204,8 @@ export const foodDatabaseService = {
         if ((b.usageCount || 0) !== (a.usageCount || 0)) return (b.usageCount || 0) - (a.usageCount || 0);
         return 0;
       });
-      
-      return results.slice(0, limit);
 
-      return results;
+      return results.slice(0, limit);
     } catch (error) {
       console.error('Error searching foods:', error);
       throw error;
@@ -178,7 +213,9 @@ export const foodDatabaseService = {
   },
 
   /**
-   * Agregar un nuevo alimento a la base de datos
+   * Agregar un alimento a la colección foodDatabase.
+   * - Si viene desde USDA (fdcId), primero intento reutilizar un documento existente.
+   * - Si hay uno parecido (mismo nombre), incremento su uso para evitar duplicados.
    */
   async addToDatabase(foodData: CreateFoodData & { fdcId?: number; source?: DatabaseFood['source'] }, userId: string): Promise<string> {
     try {
@@ -233,7 +270,7 @@ export const foodDatabaseService = {
   },
 
   /**
-   * Incrementar el contador de uso de un alimento
+   * Incremento el contador de uso (usageCount) para saber qué alimentos son más frecuentes.
    */
   async incrementUsage(foodId: string): Promise<void> {
     try {
@@ -249,7 +286,7 @@ export const foodDatabaseService = {
   },
 
   /**
-   * Obtener un alimento de la base de datos por ID
+   * Traigo un documento de foodDatabase por su ID (útil para detalles o edición).
    */
   async getFoodById(id: string): Promise<DatabaseFood | null> {
     try {
@@ -271,12 +308,11 @@ export const foodDatabaseService = {
   },
 };
 
-/**
- * Servicio para el registro de alimentos del usuario
- */
+// Servicio para manejar los registros de consumo por usuario (colección: userFoodEntries)
 export const userFoodService = {
   /**
-   * Registrar un alimento consumido por el usuario
+  * Registrar un consumo: creo un documento en userFoodEntries.
+  * Guardo los macros multiplicados por la cantidad para facilitar resúmenes.
    */
   async addUserFoodEntry(
     userId: string, 
@@ -315,7 +351,7 @@ export const userFoodService = {
   },
 
   /**
-   * Resumen de macronutrientes por día
+   * Devuelvo el resumen de macros de un día. Agrupo también por tipo de comida.
    */
   async getDailyMacroSummary(userId: string, date: string): Promise<{
     totalCalories: number;
@@ -363,7 +399,8 @@ export const userFoodService = {
   },
 
   /**
-   * Obtener alimentos del usuario por fecha
+   * Listo todos los registros de un usuario para una fecha dada, ordenados por creación.
+   * Si Firestore exige un índice compuesto y no está creado, hago un fallback en cliente.
    */
   async getUserFoodsByDate(userId: string, date: string): Promise<UserFoodEntry[]> {
     try {
@@ -395,7 +432,8 @@ export const userFoodService = {
   },
 
   /**
-   * Obtener alimentos del usuario por tipo de comida
+   * Filtro por tipo de comida (breakfast, lunch, dinner, snack) para una fecha.
+   * También manejo el caso de índice requerido con un fallback en cliente.
    */
   async getUserFoodsByMealType(
     userId: string, 
@@ -432,7 +470,7 @@ export const userFoodService = {
   },
 
   /**
-   * Actualizar un registro de alimento del usuario
+   * Actualizar campos de un registro específico en userFoodEntries.
    */
   async updateUserFoodEntry(entryId: string, updates: Partial<UserFoodEntry>): Promise<void> {
     try {
@@ -445,7 +483,7 @@ export const userFoodService = {
   },
 
   /**
-   * Eliminar un registro de alimento del usuario
+   * Eliminar un documento de userFoodEntries (por ejemplo, si el usuario deshace un registro).
    */
   async deleteUserFoodEntry(entryId: string): Promise<void> {
     try {
@@ -458,7 +496,7 @@ export const userFoodService = {
   },
 
   /**
-   * Obtener total de calorías por fecha
+   * Sumo las calorías de un día específico (útil para monitoreo rápido).
    */
   async getDailyCalories(userId: string, date: string): Promise<number> {
     try {
@@ -471,7 +509,8 @@ export const userFoodService = {
   },
 
   /**
-   * Obtener estadísticas nutricionales por rango de fechas
+   * Estadísticas en un rango [startDate, endDate]: total, promedio diario
+   * y top de alimentos más frecuentes. Manejo fallback si falta índice.
    */
   async getNutritionStats(userId: string, startDate: string, endDate: string): Promise<{
     totalCalories: number;

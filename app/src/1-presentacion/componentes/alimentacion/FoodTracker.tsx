@@ -1,3 +1,9 @@
+// FoodTracker
+// ------------------------------------------------------------
+// Componente principal de nutrición: muestra el diario del día,
+// permite buscar alimentos (base local + USDA), añadirlos a un
+// carrito y persistirlos en Firestore por comida (desayuno, etc.).
+//-------------------------------------------------------------
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Search, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -24,7 +30,7 @@ const MEAL_CONFIG = {
 
 export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const { user } = useAuth();
-  // Permitir decimales con coma o punto en los inputs
+  // Utilidad: permite decimales con coma o punto en los inputs numéricos
   const parseDecimal = useCallback((v: string) => {
     if (!v) return 0;
     const normalized = v.replace(',', '.').trim();
@@ -32,7 +38,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     return isNaN(n) ? 0 : n;
   }, []);
   
-  // Estados principales
+  // Estados principales del día seleccionado y UI
   const [userFoods, setUserFoods] = useState<UserFoodEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -43,7 +49,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     snack: true,
   });
   
-  // Estados para búsqueda
+  // Estados para búsqueda (local + USDA)
   const [searchTerm, setSearchTerm] = useState('');
   const [databaseFoods, setDatabaseFoods] = useState<DatabaseFood[]>([]);
   const [usdaResults, setUsdaResults] = useState<AdaptedUSDAFood[]>([]);
@@ -71,13 +77,15 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     category: 'other'
   });
   
-  // Estados para carrito
+  // Estados para carrito: cada ítem guarda su propio mealType
   interface CartItem {
     id: string;
     food: CommonFood;
     quantity: number;
     isFromDatabase: boolean;
     fdcId?: number;
+    // Fija el tipo de comida en el momento de añadir al carrito (no usar selector global al guardar)
+    mealType: MealType;
   }
   type CommonFood = {
     name: string;
@@ -93,15 +101,15 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isProcessingCart, setIsProcessingCart] = useState(false);
 
-  // Totales del día
+  // Totales del día (se recalculan en render; el tamaño de la lista es manejable)
   const totalCalories = userFoods.reduce((sum, food) => sum + food.calories, 0);
   const totalProtein = Math.round(userFoods.reduce((sum, f) => sum + (f.protein || 0), 0));
   const totalCarbs = Math.round(userFoods.reduce((sum, f) => sum + (f.carbs || 0), 0));
   const totalFats = Math.round(userFoods.reduce((sum, f) => sum + (f.fats || 0), 0));
 
-  const today = new Date().toISOString().split('T')[0];
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  
 
+  // Cargar alimentos del día seleccionado + prefetch semanal para KPIs
   useEffect(() => {
     const loadData = async () => {
       if (!user) {
@@ -109,6 +117,9 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         return;
       }
       try {
+        // Calcula los límites de fecha dentro del efecto para evitar recargas innecesarias
+        const today = new Date().toISOString().split('T')[0];
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         const foods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
         setUserFoods(foods);
         // Prefetch semanal silencioso (no usado directamente aquí)
@@ -119,9 +130,9 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
       }
     };
     loadData();
-  }, [user, selectedDate, today, weekAgo]);
+  }, [user, selectedDate]);
 
-  // Búsqueda
+  // Búsqueda: consulta base local y, si está configurado, la API de USDA
   const handleSearch = useCallback(async (term?: string) => {
     const searchValue = (term ?? searchTerm).trim();
     if (!searchValue) {
@@ -147,14 +158,15 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     }
   }, [searchTerm]);
 
-  // Carrito
+  // Carrito: añadir, actualizar cantidad, eliminar y guardar en Firestore
   const handleAddToCart = (food: CommonFood, isFromDatabase: boolean, fdcId?: number) => {
     const cartItem: CartItem = {
       id: `cart_${Date.now()}_${Math.random()}`,
       food: { ...food, fdcId },
       quantity: 1,
       isFromDatabase,
-      fdcId
+      fdcId,
+      mealType: selectedMealType
     };
     setCart((prev) => [...prev, cartItem]);
   };
@@ -168,6 +180,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     setCart((prev) => prev.filter((it) => it.id !== itemId));
   };
 
+  // Persiste todos los ítems del carrito para la fecha seleccionada
   const saveCart = async () => {
     if (!user || cart.length === 0) return;
     try {
@@ -204,7 +217,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
           foodData,
           selectedDate,
           item.quantity,
-          selectedMealType
+          item.mealType
         );
       }));
 
@@ -237,7 +250,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
 
   return (
     <div className="max-w-5xl mx-auto">
-      {/* Header Compacto con KPIs */}
+      {/* Header compacto con KPIs diarios (calorías y macros) */}
       <div className={`sticky top-0 z-10 backdrop-blur-xl border-b ${
         isDark ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'
       }`}>
@@ -257,7 +270,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
             </div>
           </div>
 
-          {/* Macros Bar Minimalista */}
+          {/* Barra de macros minimalista */}
           <div className="grid grid-cols-3 gap-4">
             <div className={`text-center p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
               <div className={`text-sm font-medium ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Proteína</div>
@@ -275,7 +288,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         </div>
       </div>
 
-      {/* Listado de Comidas - Formato Tabla */}
+      {/* Listado por comida en formato tabla plegable */}
       <div className="p-6 space-y-4">
         {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mealType) => {
           const config = MEAL_CONFIG[mealType];
@@ -307,7 +320,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                 </div>
               </button>
 
-              {/* Tabla de Alimentos */}
+              {/* Tabla de alimentos del bloque abierto */}
               {isExpanded && foods.length > 0 && (
                 <div className={`border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
                   <table className="w-full">
@@ -359,7 +372,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                 </div>
               )}
 
-              {/* Empty State */}
+              {/* Estado vacío del bloque */}
               {isExpanded && foods.length === 0 && (
                 <div className={`px-6 py-8 text-center border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
                   <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>No hay alimentos registrados</p>
@@ -370,7 +383,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         })}
       </div>
 
-      {/* Botón Flotante para Agregar */}
+      {/* Botón flotante para abrir el modal de añadir */}
       <button
         onClick={() => setIsModalOpen(true)}
         className={`fixed z-40 w-16 h-16 rounded-full shadow-2xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 
@@ -380,7 +393,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         <Plus size={28} className="text-white" />
       </button>
 
-      {/* Modal Full-Screen para Agregar */}
+      {/* Modal full-screen: selector de comida, búsqueda y carrito */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
           <div className={`w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl ${isDark ? 'bg-gray-900' : 'bg-white'} flex flex-col my-auto`}>
@@ -625,7 +638,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
               </div>
             </div>
 
-            {/* Cart Footer */}
+            {/* Cart footer: lista pequeña + botón de guardar */}
             {cart.length > 0 && (
               <div className={`px-8 py-6 border-t ${isDark ? 'border-gray-800 bg-gray-800/50' : 'border-gray-200 bg-gray-50'} flex-shrink-0`}>
                 <div className="mb-4">

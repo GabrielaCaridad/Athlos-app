@@ -1,3 +1,20 @@
+/**
+ * Formulario de Autenticación (login/registro)
+ *
+ * Flujo
+ * - Login: `signInWithEmailAndPassword` con validaciones básicas.
+ * - Registro: crea usuario en Auth, actualiza displayName y genera documento `users/{uid}` en Firestore.
+ * - Al finalizar, llama `onAuthSuccess()` para que el contenedor reaccione (navegación/state arriba).
+ *
+ * Validaciones
+ * - Email con regex sencillo.
+ * - Password mínimo 6 caracteres.
+ * - En registro: nombre requerido y confirmación de password.
+ *
+ * Notas
+ * - Mensajes de error se derivan de `error.code` de Firebase cuando es posible.
+ * - No persiste preferencias de tema: `isDark` solo decide el estilo visual de este form.
+ */
 // AuthForm: login y registro con Firebase Auth.
 import React, { useState } from 'react';
 import { Eye, EyeOff, Mail, Lock, User, Dumbbell, ArrowRight, Loader } from 'lucide-react';

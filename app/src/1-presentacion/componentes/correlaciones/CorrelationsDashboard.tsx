@@ -1,3 +1,25 @@
+/**
+ * Panel de Correlaciones e Insights personales
+ *
+ * Objetivo
+ * - Visualizar patrones entre nutrición (calorías y macros) y rendimiento de entrenamientos.
+ * - Mostrar insights generados automáticamente a partir de datos reales del usuario.
+ *
+ * Fuentes de datos
+ * - useUserData(uid, 30): comidas y entrenamientos recientes en tiempo real (30 días).
+ * - buildCorrelationData(workouts, foods, 14): agrega y calcula métricas en una ventana de 14 días.
+ * - usePersonalInsights(uid): lista de insights/patrones detectados (con evidencia).
+ *
+ * UI
+ * - Encabezado de insights con un panel que permite navegar la evidencia.
+ * - Gráfico de dispersión (calorías vs performance) con zona óptima (1800-2200 kcal).
+ * - Barras comparativas de macros por día.
+ * - “Resumen numérico” con KPIs agregados rápidos.
+ *
+ * Notas
+ * - No modifica datos: es un panel puramente de lectura/visualización.
+ * - Para mantener la performance, los datos derivados se memorizan con useMemo.
+ */
 import { useEffect, useMemo } from 'react';
 import { ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, BarChart, Bar, Legend, Cell } from 'recharts';
 import { TrendingUp, AlertCircle, BarChart3 } from 'lucide-react';
@@ -66,6 +88,7 @@ interface CorrelationsDashboardProps { isDark: boolean }
 export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardProps) {
   const { user } = useAuth();
   const { workouts, foods, loading: loadingUserData } = useUserData(user?.uid, 30);
+  // Derivamos datos de correlación en ventana de 14 días a partir de workouts+foods
   const correlationData: CorrelationDataPoint[] = useMemo(() => buildCorrelationData(workouts, foods, 14), [workouts, foods]);
   // Logs: días y rango de fechas
   useEffect(() => {
@@ -104,6 +127,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   // correlationData is derived from real-time userData via useMemo
 
   if (loading) {
+    // Estado de carga (mientras llega userData)
     return (
       <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
         <div className="flex items-center justify-center h-64">
@@ -118,6 +142,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   }
 
   if (correlationData.length < 7 && (!insights || insights.length === 0)) {
+    // Datos insuficientes para gráficos: menos de 7 días con entrenamientos y sin insights
     return (
       <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
         <div className="text-center py-10">
@@ -132,6 +157,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     );
   }
 
+  // Helper de color por categoría calórica
   const colorFor = (c: CalorieCategory) => (c === 'optimo' ? '#10B981' : c === 'bajo' ? '#F59E0B' : '#EF4444');
 
   return (

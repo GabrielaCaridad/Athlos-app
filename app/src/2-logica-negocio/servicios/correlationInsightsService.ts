@@ -1,5 +1,18 @@
-// Servicio para analizar correlaciones entre nutrición y rendimiento
-// Requisitos: importar Timestamp (tipo), userFoodService y workoutService, definir interfaces y clase con métodos solicitados.
+/*
+  CorrelationInsightsService
+  ------------------------------------------------------------
+  Analiza correlaciones entre nutrición y rendimiento para generar
+  insights personales. Combina foods (calorías/macros) y workouts
+  (energía, duración, performance) por día, intenta obtener insights
+  con IA mediante Cloud Functions y cae a un fallback determinístico
+  cuando no hay suficiente información o la IA falla.
+
+  Puntos clave de diseño:
+  - Usa el UID del usuario autenticado 
+  - Valida mínimo de días de datos antes de intentar analizar.
+  - Guarda los insights válidos en Firestore para reuso en el dashboard.
+  ------------------------------------------------------------
+*/
 
 import type { Timestamp } from 'firebase/firestore';
 import { Timestamp as FsTimestamp, setDoc, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';

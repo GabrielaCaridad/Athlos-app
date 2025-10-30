@@ -1,3 +1,16 @@
+/**
+ * WorkoutTracker – Registro y seguimiento de entrenamientos
+ *
+ * Qué hace
+ * - Permite iniciar, pausar, reanudar y finalizar una sesión con cronómetro y auto-guardado.
+ * - Crea rutinas desde plantillas o seleccionando ejercicios (API externa) y arranca con energía pre-entreno.
+ * - Muestra historial, métricas semanales y utilidades como timers de descanso por ejercicio.
+ *
+ * Fuentes de datos
+ * - workoutService y workoutTemplateService (Firestore): sesiones, plantillas y estadísticas.
+ * - exerciseAPIService: catálogo/búsqueda de ejercicios (traduce ES↔EN por grupos musculares).
+ * - useAuth: usuario actual para asociar registros.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Timestamp } from 'firebase/firestore';
 import {
@@ -199,7 +212,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     return () => { mounted = false; };
   }, [user?.uid, pushToast]);
 
-  // Ticker de cronómetro principal
+  // Ticker de cronómetro principal: aumenta elapsedSeconds cada segundo mientras la sesión esté activa y no en pausa
   useEffect(() => {
     if (!activeWorkout || workoutPaused || !workoutStartEpoch) {
       if (intervalRef.current) window.clearInterval(intervalRef.current);
@@ -226,6 +239,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   }, []);
 
   // Confirmar inicio tras elegir energía inicial
+  // Confirma inicio de sesión con energía pre-entreno capturada en modal
   const confirmStartWithEnergy = useCallback(async () => {
     if (!user?.uid || !pendingNewWorkout || preEnergyLevel == null) return;
     try {
@@ -254,6 +268,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
 
   // Auto-guardado: persiste progreso del workout activo (throttled)
   const lastSaveRef = useRef<number>(0);
+  // Auto-guardado básico: guarda duración y ejercicios con un límite de frecuencia (~1.5s)
   useEffect(() => {
     const save = async () => {
       if (!activeWorkout?.id) return;
@@ -626,6 +641,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     return selectedExercises.reduce((sum, ex) => sum + ((ex.defaultSets ?? 3) * 5), 0);
   }, [selectedExercises]);
 
+  // Crea una plantilla (opcional) y prepara una sesión nueva a partir de la selección actual
   const saveCartAll = useCallback(async () => {
     if (!user?.uid) return;
     if (selectedExercises.length === 0) { pushToast('info', 'Agrega ejercicios a la lista'); return; }

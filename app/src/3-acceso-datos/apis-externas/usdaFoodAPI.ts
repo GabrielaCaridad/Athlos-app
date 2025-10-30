@@ -1,3 +1,10 @@
+/*
+  usdaFoodAPI
+  ------------------------------------------------------------
+  Integración con USDA FoodData Central. Traduce consultas del usuario
+  (ES → EN) para mejorar resultados, adapta la respuesta al formato
+  interno y traduce nombres al español cuando es posible.
+*/
 // usdaFoodAPI.ts - Integración con USDA FoodData Central
 const USDA_API_KEY = import.meta.env.VITE_USDA_API_KEY as string | undefined;
 const USDA_BASE_URL = 'https://api.nal.usda.gov/fdc/v1';

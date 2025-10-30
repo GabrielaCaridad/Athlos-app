@@ -1,3 +1,16 @@
+/**
+ * Página de Configuración
+ *
+ * Qué permite
+ * - Editar datos del perfil (nombre, fecha de nacimiento, género, peso/altura).
+ * - Definir objetivos, nivel de actividad y peso objetivo (según meta).
+ * - Ver métricas calculadas (IMC, calorías objetivo y macros) cuando hay datos suficientes.
+ *
+ * Flujo de datos
+ * - Lee/escribe perfil en Firestore vía userService; maneja perfiles inexistentes creando uno básico.
+ * - Al guardar, si hay peso válido, intenta auto-registrarlo.
+ * - Si el perfil está completo, inicializa personalización (calorías y macros) y recalcula métricas para mostrar.
+ */
 import { useState, useEffect } from 'react';
 import { Timestamp } from 'firebase/firestore';
 import { useAuth } from '../../hooks/useAuth';
@@ -167,6 +180,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
       const { currentWeight, height, dateOfBirth, gender, activityLevel, primaryGoal } = profile;
       
       if (currentWeight && height && dateOfBirth && gender && activityLevel && primaryGoal) {
+        // Inicializa valores derivados personalizados (p. ej. targets de calorías) en Firestore
         // Inicializar personalización (calcula calorías y macros)
         await userService.initializePersonalization(user.uid, profile);
         
