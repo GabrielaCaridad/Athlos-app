@@ -434,12 +434,13 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
       // Asegurar base de setsDetail con tipo y numeración por defecto
       const baseList: SetDetailUI[] = (ex.setsDetail?.slice() as SetDetailUI[] | undefined) || Array.from({ length: ex.sets }, (_, i) => ({ reps: ex.reps, weight: ex.weight, done: false, type: 'N', serieNumber: i + 1 }));
       const setsDetail: SetDetailUI[] = [...baseList];
-      // Lógica inteligente: si última serie es normal (N), incrementar su serieNumber, sino continuar con el siguiente número
+      // Duplicar valores de la última serie (reps y weight) para nueva serie
       const last = setsDetail[setsDetail.length - 1];
-      const existingNormals = setsDetail.filter(s => s?.type === 'N');
-      const maxSerie = existingNormals.length > 0 ? Math.max(...existingNormals.map(s => Number(s.serieNumber || 0))) : 0;
-      const nextSerieNumber = last?.type === 'N' ? (Number(last.serieNumber || maxSerie) + 1) : (maxSerie + 1);
-      setsDetail.push({ reps: ex.reps, weight: ex.weight, done: false, type: 'N', serieNumber: nextSerieNumber });
+      const duplicateReps = Number.isFinite(last?.reps) ? (last!.reps) : ex.reps;
+      const duplicateWeight = Number.isFinite(last?.weight) ? (last!.weight) : ex.weight;
+      setsDetail.push({ reps: duplicateReps, weight: duplicateWeight, done: false, type: 'N', serieNumber: setsDetail.length + 1 });
+      // Reindexar serieNumber secuencialmente (1..n) para evitar huecos tras operaciones previas
+      setsDetail.forEach((s, i) => { s.serieNumber = i + 1; });
       const nextExercises = w.exercises.slice();
       // Actualizar conteo de sets al total actual y marcar como no completado (se agregó una serie pendiente)
       nextExercises[exIndex] = { ...ex, sets: setsDetail.length, setsDetail, completed: false } as Exercise;
@@ -457,6 +458,8 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     if (baseList.length <= 1) return; // mínimo 1
     const newList = baseList.slice();
     newList.splice(setIndex, 1);
+    // Reindexar después de eliminar para mantener numeración limpia (1..n)
+    newList.forEach((s, i) => { s.serieNumber = i + 1; });
     const newSets = Math.max(1, newList.length);
     const completed = newList.length > 0 && newList.every(s => Boolean(s?.done));
     const nextExercises = prevWorkout.exercises.slice();

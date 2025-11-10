@@ -1,6 +1,6 @@
 // Propósito: registrar alimentos del día, buscar (base local + USDA) y ver totales.
 // Contexto: usa foodDatabase (userId+date YYYY-MM-DD UTC), servicios userFoodService y usdaFoodAPI.
-//           Índices: foodDatabase(userId+date+createdAt DESC) y foodDatabase(userId+date DESC) para rangos.
+// Índices: foodDatabase(userId+date+createdAt DESC) y foodDatabase(userId+date DESC) para rangos.
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Search, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';

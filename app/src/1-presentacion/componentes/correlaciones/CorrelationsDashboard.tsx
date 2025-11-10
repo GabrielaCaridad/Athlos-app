@@ -1,333 +1,439 @@
 /**
  * Panel de Correlaciones e Insights personales
  *
- * Objetivo
- * - Visualizar patrones entre nutrición (calorías y macros) y rendimiento de entrenamientos.
- * - Mostrar insights generados automáticamente a partir de datos reales del usuario.
- *
- * Fuentes de datos
- * - useUserData(uid, 30): comidas y entrenamientos recientes en tiempo real (30 días).
- * - buildCorrelationData(workouts, foods, 14): agrega y calcula métricas en una ventana de 14 días.
- * - usePersonalInsights(uid): lista de insights/patrones detectados (con evidencia).
- *
- * UI
- * - Encabezado de insights con un panel que permite navegar la evidencia.
- * - Gráfico de dispersión (calorías vs performance) con zona óptima (1800-2200 kcal).
- * - Barras comparativas de macros por día.
- * - “Resumen numérico” con KPIs agregados rápidos.
- *
- * Notas
- * - No modifica datos: es un panel puramente de lectura/visualización.
- * - Para mantener la performance, los datos derivados se memorizan con useMemo.
+ * - Reemplaza lógicas mock por datos reales (Firestore) en tiempo real.
+ * - Agrega dataset diario (incluye días sin entrenar) y calcula correlaciones simples.
  */
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, BarChart, Bar, Legend, Cell } from 'recharts';
-import { TrendingUp, AlertCircle, BarChart3 } from 'lucide-react';
+// Importación de íconos (removido AlertCircle que no se utilizaba)
+import { TrendingUp, BarChart3 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
-import { useUserData } from '../../hooks/useUserData';
-import { buildCorrelationData, type CorrelationDataPoint, type CalorieCategory } from '../../../2-logica-negocio/servicios/metricsService';
-import { usePersonalInsights } from '../../hooks/usePersonalInsights';
 import InsightsPanel from './InsightsPanel';
+import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
+import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs } from 'firebase/firestore';
+import { db } from '../../../3-acceso-datos/firebase/config';
+import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
 
-/**
- * Componente de tooltip informativo reutilizable
- */
-interface InfoTooltipProps {
-  title: string;
-  description: string;
-  bullets?: string[];
-  legend?: { color: string; label: string }[];
-  isDark: boolean;
+// Dataset diario unificado para gráficos e insights
+interface DailyPoint {
+  date: string; // YYYY-MM-DD (día local Chile)
+  kcal: number;
+  protein_g: number;
+  carbs_g: number;
+  fats_g: number;
+  performance?: number; // promedio del día si hubo entrenos
+}
+type FoodEntryLite = { date: string; calories?: number; protein?: number; carbs?: number; fats?: number };
+type WorkoutLite = { createdAt?: Timestamp; performanceScore?: number };
+type ScatterPoint = { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso' };
+
+// Helper TZ Chile (UTC-3) – para eje X consistente local
+const toChileDateKey = (d: Date): string => {
+  const local = new Date(d.getTime() - (3 * 60 * 60 * 1000)); // ajuste simple UTC-3
+  return local.toISOString().slice(0, 10);
+};
+
+// Sanitización y límites
+const clampMacro = (n: number): number => (!Number.isFinite(n) || n < 0 ? 0 : Math.min(n, 1000));
+const clampCalories = (n: number): number => (!Number.isFinite(n) || n < 0 ? 0 : Math.min(n, 6000));
+
+// Pearson r
+function pearson(xs: number[], ys: number[]): { r: number; n: number } {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return { r: 0, n };
+  const mean = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const mx = mean(xs); const my = mean(ys);
+  let num = 0, dxSum = 0, dySum = 0;
+  for (let i = 0; i < n; i++) { const dx = xs[i] - mx; const dy = ys[i] - my; num += dx * dy; dxSum += dx * dx; dySum += dy * dy; }
+  const den = Math.sqrt(dxSum) * Math.sqrt(dySum);
+  return { r: den === 0 ? 0 : num / den, n };
 }
 
-const InfoTooltip = ({ title, description, bullets, legend, isDark }: InfoTooltipProps) => (
-  <div className="relative group">
-    <div className={`w-5 h-5 rounded-full flex items-center justify-center cursor-help transition-all ${
-      isDark 
-        ? 'bg-purple-900/40 text-purple-400 hover:bg-purple-900/60' 
-        : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
-    }`}>
-      <span className="text-xs font-bold">?</span>
+// Insights derivados (sin IA) con evidencia y acción
+function generateDerivedInsights(daily: DailyPoint[], userWeightKg?: number): PersonalInsight[] {
+  const insights: PersonalInsight[] = [];
+  if (!daily || daily.length < 3) return insights;
+  const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / (arr.length || 1);
+  const kcalArr = daily.map(d => d.kcal);
+  const proteinArr = daily.map(d => d.protein_g);
+  const carbsArr = daily.map(d => d.carbs_g);
+  const fatsArr = daily.map(d => d.fats_g);
+  const avgK = avg(kcalArr); const avgP = avg(proteinArr); const avgC = avg(carbsArr); const avgF = avg(fatsArr);
+  const stdK = Math.sqrt(avg(kcalArr.map(k => (k - avgK) ** 2)));
+  const cvK = avgK > 0 ? (stdK / avgK) * 100 : 0;
+  const protTarget = userWeightKg ? userWeightKg * 1.6 : 0;
+
+  if (avgK > 0 && avgK < 1800) {
+    insights.push({
+      id: 'ins_cal_baja', type: 'recommendation',
+      title: '⚠️ Posible insuficiencia calórica',
+      description: `Promedio ${Math.round(avgK)} kcal, por debajo del rango general (1800–2200 kcal).`,
+      evidence: [
+        `Promedio ${daily.length} días: ${Math.round(avgK)} kcal`,
+        `Rango: ${Math.min(...kcalArr)}–${Math.max(...kcalArr)} kcal`,
+      ],
+      actionable: 'Aumenta +150–200 kcal priorizando carbohidratos complejos y proteína magra.',
+      confidence: daily.length >= 7 ? 'high' : 'medium',
+      createdAt: new Date()
+    });
+  }
+  if (protTarget > 0 && avgP < protTarget * 0.85) {
+    insights.push({
+      id: 'ins_prot_baja', type: 'recommendation',
+      title: '💪 Proteína por debajo del objetivo',
+      description: `Promedio ${Math.round(avgP)}g vs objetivo estimado ${Math.round(protTarget)}g (1.6 g/kg).`,
+      evidence: [
+        `Peso usado: ${userWeightKg ?? 'N/D'} kg`,
+        `Promedios (g): P ${Math.round(avgP)} / C ${Math.round(avgC)} / G ${Math.round(avgF)}`
+      ],
+      actionable: 'Añade 1 porción más de proteína magra en comidas principales.',
+      confidence: daily.length >= 7 ? 'high' : 'medium',
+      createdAt: new Date()
+    });
+  }
+  if (cvK > 25 && avgK >= 1700) {
+    insights.push({
+      id: 'ins_var_cal', type: 'pattern',
+      title: '🔄 Alta variabilidad de calorías',
+      description: `Tu ingesta fluctúa (CV ${cvK.toFixed(1)}%). La consistencia favorece rendimiento.`,
+      evidence: [
+        `Promedio: ${Math.round(avgK)} kcal`,
+        `Desviación: ${Math.round(stdK)} kcal`,
+      ],
+      actionable: 'Apunta a que la mayoría de días quede dentro de ±10% del promedio actual.',
+      confidence: cvK > 35 ? 'high' : 'medium',
+      createdAt: new Date()
+    });
+  }
+  if (avgC < 150) {
+    insights.push({
+      id: 'ins_carbs_bajos', type: 'recommendation',
+      title: '🥖 Carbohidratos posiblemente bajos',
+      description: `Promedio de carbohidratos ${Math.round(avgC)}g/día.`,
+      evidence: [
+        `Proteína ${Math.round(avgP)}g, Grasas ${Math.round(avgF)}g`
+      ],
+      actionable: 'Incluye fuentes complejas (avena, arroz, papa) especialmente pre-entreno.',
+      confidence: daily.length >= 7 ? 'medium' : 'low',
+      createdAt: new Date()
+    });
+  }
+  return insights.slice(0, 6);
+}
+
+// Tooltip informativo compacto
+function InfoTooltip({ title, description, bullets, legend, isDark }: { title: string; description: string; bullets?: string[]; legend?: { color: string; label: string }[]; isDark: boolean }) {
+  return (
+    <div className="relative group">
+      <div className={`w-5 h-5 rounded-full flex items-center justify-center cursor-help transition-all ${isDark ? 'bg-purple-900/40 text-purple-400 hover:bg-purple-900/60' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'}`}>
+        <span className="text-xs font-bold">?</span>
+      </div>
+      <div className={`absolute left-0 top-8 w-80 p-4 rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 shadow-2xl ${isDark ? 'bg-gray-800 border border-gray-700 text-gray-200' : 'bg-white border border-gray-200 text-gray-700'}`}>
+        <p className="text-sm font-semibold mb-2">💡 {title}</p>
+        <p className="text-xs leading-relaxed mb-3">{description}</p>
+        {bullets?.length ? (
+          <ul className="text-xs space-y-1 mb-3 ml-3">{bullets.map((b, i) => (<li key={i}>• {b}</li>))}</ul>
+        ) : null}
+        {legend?.length ? (
+          <div className="space-y-1.5 pt-2 border-t border-gray-600">{legend.map((l, i) => (
+            <div key={i} className="flex items-center gap-2 text-xs"><div className={`w-3 h-3 rounded-full ${l.color}`} /> <span>{l.label}</span></div>
+          ))}</div>
+        ) : null}
+      </div>
     </div>
-    
-    {/* Contenido del tooltip */}
-    <div className={`absolute left-0 top-8 w-80 p-4 rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 shadow-2xl ${
-      isDark 
-        ? 'bg-gray-800 border border-gray-700 text-gray-200' 
-        : 'bg-white border border-gray-200 text-gray-700'
-    }`}>
-      <p className="text-sm font-semibold mb-2">💡 {title}</p>
-      <p className="text-xs leading-relaxed mb-3">
-        {description}
-      </p>
-      
-      {bullets && bullets.length > 0 && (
-        <ul className="text-xs space-y-1 mb-3 ml-3">
-          {bullets.map((bullet, idx) => (
-            <li key={idx}>• {bullet}</li>
-          ))}
-        </ul>
-      )}
-      
-      {legend && legend.length > 0 && (
-        <div className="space-y-1.5 pt-2 border-t border-gray-600">
-          {legend.map((item, idx) => (
-            <div key={idx} className="flex items-center gap-2 text-xs">
-              <div className={`w-3 h-3 rounded-full ${item.color}`}></div>
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  </div>
-);
+  );
+}
 
 interface CorrelationsDashboardProps { isDark: boolean }
 
 export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardProps) {
   const { user } = useAuth();
-  const { workouts, foods, loading: loadingUserData } = useUserData(user?.uid, 30);
-  // Derivamos datos de correlación en ventana de 14 días a partir de workouts+foods
-  const correlationData: CorrelationDataPoint[] = useMemo(() => buildCorrelationData(workouts, foods, 14), [workouts, foods]);
-  // Logs: días y rango de fechas
-  useEffect(() => {
-    if (!correlationData || correlationData.length === 0) return;
-    const first = correlationData[0]?.date;
-    const last = correlationData[correlationData.length - 1]?.date;
-    console.log('📊 [Correlaciones] Días de datos para correlaciones:', correlationData.length);
-    console.log('📊 [Correlaciones] Rango de fechas:', { desde: first, hasta: last });
-  }, [correlationData]);
-  const loading = loadingUserData;
-  const { insights, loading: loadingInsights, error: insightsError } = usePersonalInsights(user?.uid || '');
+  const uid = user?.uid;
 
-  // Patrones (insights) logs
-  useEffect(() => {
-    console.log('🔍 [Patrones] Insights cargados (correlaciones):', insights);
-    console.log('🔍 [Patrones] Cantidad (correlaciones):', insights?.length || 0);
-    console.log('🔍 [Patrones] Tipos (correlaciones):', (insights || []).map(i => ({ type: i.type, title: i.title })));
-  }, [insights]);
+  // Ventana: 14 / 28 / 90 / LT (aprox 180)
+  const [windowKey, setWindowKey] = useState<'14' | '28' | '90' | 'LT'>('14');
+  const windowDays = windowKey === 'LT' ? 180 : Number(windowKey);
 
-  // Tooltip personalizado para el scatter (Calorías vs Performance)
-  type TooltipProps = { active?: boolean; payload?: Array<{ payload: CorrelationDataPoint }> };
-  const CustomScatterTooltip = ({ active, payload }: TooltipProps) => {
-    if (!active || !payload || !payload.length) return null;
-    const d = payload[0].payload as CorrelationDataPoint;
+  // Datos crudos realtime
+  const [rawFoods, setRawFoods] = useState<FoodEntryLite[]>([]);
+  const [rawWorkouts, setRawWorkouts] = useState<WorkoutLite[]>([]);
+  const [loadingFoods, setLoadingFoods] = useState(true);
+  const [loadingWorkouts, setLoadingWorkouts] = useState(true);
+  const [userWeightKg, setUserWeightKg] = useState<number | undefined>(undefined);
+
+  // Perfil (peso) – lectura única
+  useEffect(() => {
+    if (!uid) return;
+    (async () => {
+      try { const profile = await userService.getUserProfile(uid); setUserWeightKg(profile?.currentWeight); } catch (e) { console.warn('Perfil no disponible', e); }
+    })();
+  }, [uid]);
+
+  // Fechas límite
+  const { startDate, endDate } = useMemo(() => {
+    const end = new Date();
+    const start = new Date(end.getTime() - (windowDays - 1) * 24 * 60 * 60 * 1000);
+    return { startDate: start, endDate: end };
+  }, [windowDays]);
+  const startYmd = startDate.toISOString().slice(0, 10);
+  const endYmd = endDate.toISOString().slice(0, 10);
+
+  // Snapshot alimentos
+  useEffect(() => {
+    if (!uid) return;
+    setLoadingFoods(true);
+    const foodsCol = collection(db, 'foodDatabase');
+    const qFoods = query(
+      foodsCol,
+      where('userId', '==', uid),
+      where('date', '>=', startYmd),
+      where('date', '<=', endYmd),
+      orderBy('date', 'desc')
+    );
+    const unsub = onSnapshot(qFoods, snap => {
+      // Forzar el shape esperado sin usar any
+      setRawFoods(snap.docs.map(d => (d.data() as FoodEntryLite)) as FoodEntryLite[]);
+      setLoadingFoods(false);
+    }, async () => {
+      // Fallback si falta índice compuesto
+      const qAll = query(foodsCol, where('userId', '==', uid));
+      const s = await getDocs(qAll);
+      const all = s.docs.map(d => (d.data() as FoodEntryLite)) as FoodEntryLite[];
+      setRawFoods(all.filter((f) => f.date >= startYmd && f.date <= endYmd));
+      setLoadingFoods(false);
+    });
+    return () => unsub();
+  }, [uid, startYmd, endYmd]);
+
+  // Snapshot workouts (por createdAt)
+  useEffect(() => {
+    if (!uid) return;
+    setLoadingWorkouts(true);
+    const workoutsCol = collection(db, 'workouts');
+    const qWorkouts = query(
+      workoutsCol,
+      where('userId', '==', uid),
+      where('createdAt', '>=', Timestamp.fromDate(startDate)),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(qWorkouts, snap => {
+      setRawWorkouts(snap.docs.map(d => (d.data() as WorkoutLite)) as WorkoutLite[]);
+      setLoadingWorkouts(false);
+    }, () => setLoadingWorkouts(false));
+    return () => unsub();
+  }, [uid, startDate]);
+
+  // Dataset diario
+  const dailyPoints: DailyPoint[] = useMemo(() => {
+    const map: Record<string, DailyPoint> = {};
+    for (let d = new Date(startDate); d <= endDate; d = new Date(d.getTime() + 86400000)) {
+      const key = toChileDateKey(d);
+      map[key] = { date: key, kcal: 0, protein_g: 0, carbs_g: 0, fats_g: 0 };
+    }
+  rawFoods.forEach((f) => {
+      const key = toChileDateKey(new Date(f.date + 'T00:00:00Z'));
+      const dp = map[key]; if (!dp) return;
+      dp.kcal = clampCalories(dp.kcal + Number(f.calories || 0));
+      dp.protein_g = clampMacro(dp.protein_g + Number(f.protein || 0));
+      dp.carbs_g = clampMacro(dp.carbs_g + Number(f.carbs || 0));
+      dp.fats_g = clampMacro(dp.fats_g + Number(f.fats || 0));
+    });
+    const byDayPerf: Record<string, number[]> = {};
+  rawWorkouts.forEach((w) => {
+      const ts: Timestamp | undefined = w.createdAt; if (!ts) return;
+      const key = toChileDateKey(ts.toDate());
+      if (!byDayPerf[key]) byDayPerf[key] = [];
+      const score = Number(w.performanceScore || 0);
+      if (score > 0) byDayPerf[key].push(score);
+    });
+    Object.entries(byDayPerf).forEach(([k, arr]) => {
+      if (map[k]) map[k].performance = Math.round(arr.reduce((s, v) => s + v, 0) / arr.length);
+    });
+    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
+  }, [rawFoods, rawWorkouts, startDate, endDate]);
+
+  // Dispersión kcal vs performance (días con entreno)
+  const scatterData = useMemo<ScatterPoint[]>(() => dailyPoints.filter(d => (d.performance ?? 0) > 0).map(d => ({
+    date: d.date,
+    calories: d.kcal,
+    performance: d.performance!,
+    category: d.kcal < 1800 ? 'bajo' as const : d.kcal <= 2200 ? 'optimo' as const : 'exceso' as const
+  })), [dailyPoints]);
+
+  // Correlaciones
+  const { r: rCalPerf, n: nCalPerf } = useMemo(() => pearson(scatterData.map(d => d.calories), scatterData.map(d => d.performance)), [scatterData]);
+  const { r: rProtPerf } = useMemo(() => pearson(scatterData.map(d => dailyPoints.find(p => p.date === d.date)?.protein_g || 0), scatterData.map(d => d.performance)), [scatterData, dailyPoints]);
+
+  // Insights derivados
+  const derivedInsights = useMemo(() => generateDerivedInsights(dailyPoints, userWeightKg), [dailyPoints, userWeightKg]);
+
+  const loading = (loadingFoods || loadingWorkouts) && dailyPoints.length === 0;
+  // Aviso si pocos días -> usado para nota bajo el gráfico
+  const showLimitedDataNotice = scatterData.length > 0 && scatterData.length < 7;
+  const colorFor = (c: ScatterPoint['category']) => (c === 'optimo' ? '#10B981' : c === 'bajo' ? '#F59E0B' : '#EF4444');
+
+  const CustomScatterTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso' } }> }) => {
+    if (!active || !payload?.length) return null;
+    const d = payload[0].payload;
     return (
       <div className={`rounded-xl px-3 py-2 border text-xs shadow-sm ${isDark ? 'bg-gray-900/95 border-gray-800 text-gray-200' : 'bg-white/95 border-gray-200 text-gray-800'}`}>
         <div className="font-semibold mb-1">{d.date}</div>
         <div>Calorías: <span className="font-medium">{Math.round(d.calories)} kcal</span></div>
         <div>Performance: <span className="font-medium">{Math.round(d.performance)}%</span></div>
-        <div>Energía: <span className="font-medium">{Math.round(d.energyLevel * 10) / 10}/10</span></div>
         <div>Categoría: <span className="font-medium capitalize">{d.category}</span></div>
       </div>
     );
   };
 
-  // correlationData is derived from real-time userData via useMemo
-
   if (loading) {
-    // Estado de carga (mientras llega userData)
     return (
       <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <div className="animate-spin w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full mx-auto mb-4" />
-            <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Analizando correlaciones...</p>
+            <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Cargando datos reales...</p>
           </div>
         </div>
-        
       </div>
     );
   }
 
-  // Aviso suave si hay pocos días (mostramos gráficos pero avisamos)
-  const showLimitedDataNotice = correlationData.length > 0 && correlationData.length < 7;
-
-  // Helper de color por categoría calórica
-  const colorFor = (c: CalorieCategory) => (c === 'optimo' ? '#10B981' : c === 'bajo' ? '#F59E0B' : '#EF4444');
-
   return (
     <div className="space-y-8">
-      {/* Sección de Insights - NUEVA */}
+      {/* Encabezado de insights (derivados locales del dataset) */}
       <section>
         <div className="flex items-center gap-3 mb-2">
-          <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-            🧠 Tu Autoconocimiento
-          </h2>
+          <h2 className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>🧠 Tu Autoconocimiento</h2>
           <InfoTooltip
             isDark={isDark}
             title="¿Qué son estos insights?"
-            description="Son patrones personales que la app identificó automáticamente analizando TUS datos específicos. No son consejos genéricos."
+            description="Patrones detectados automáticamente a partir de tus datos reales (comidas + entrenos)."
             bullets={[
-              'Pattern (morado): Relación clara identificada en tus hábitos',
-              'Recommendation (azul): Sugerencia basada en tus datos para mejorar',
-              'Destacado (verde): Reconocimiento de algo que estás haciendo bien',
-              'La evidencia muestra los datos reales que respaldan cada insight'
+              'Pattern: relación consistente en tus hábitos',
+              'Recommendation: ajuste accionable para mejorar',
+              'La evidencia incluye promedios y rangos de tus días'
             ]}
           />
         </div>
-        {insightsError && (
-          <div className={`mb-3 p-3 rounded-xl text-sm ${isDark ? 'bg-red-900/30 border border-red-700 text-red-200' : 'bg-red-50 border border-red-200 text-red-700'}`}>
-            {insightsError}
+        <InsightsPanel insights={derivedInsights} loading={false} isDark={isDark} hideHeader />
+      </section>
+
+      {/* Selector de ventana y nota realtime */}
+      <div className="flex gap-2 flex-wrap">
+        {(['14','28','90','LT'] as const).map(w => (
+          <button key={w} onClick={() => setWindowKey(w)} className={`px-3 py-1 rounded-full text-xs font-semibold border transition ${windowKey===w ? (isDark?'bg-purple-600 text-white border-purple-500':'bg-purple-600 text-white border-purple-600') : (isDark?'bg-gray-700 text-gray-300 border-gray-600 hover:bg-gray-600':'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200')}`}>
+            {w==='LT' ? 'Lifetime' : `${w}d`}
+          </button>
+        ))}
+        <span className={`text-xs ${isDark?'text-gray-400':'text-gray-500'}`}>Actualización en tiempo real</span>
+      </div>
+
+      {/* Gráfico: Calorías vs Performance */}
+      {dailyPoints.length > 0 && (
+        <section>
+          <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <TrendingUp className={`${isDark ? 'text-purple-400' : 'text-purple-600'}`} size={20} />
+                <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Calorías vs Performance</h3>
+                <InfoTooltip
+                  isDark={isDark}
+                  title="¿Qué muestra este gráfico?"
+                  description="Cada punto es un día con entrenamiento; se relaciona ingesta calórica y rendimiento."
+                  legend={[
+                    { color: 'bg-yellow-500', label: 'Bajo (<1800 kcal)' },
+                    { color: 'bg-green-500', label: 'Óptimo (1800-2200 kcal)' },
+                    { color: 'bg-red-500', label: 'Exceso (>2200 kcal)' }
+                  ]}
+                />
+              </div>
+              {scatterData.length >= 2 && (
+                <div className="text-xs text-right">
+                  <div className={isDark? 'text-gray-300':'text-gray-600'}>r(kcal↔perf): <strong>{rCalPerf.toFixed(2)}</strong> (n={nCalPerf})</div>
+                  <div className={isDark? 'text-gray-400':'text-gray-500'}>r(prot↔perf): <strong>{rProtPerf.toFixed(2)}</strong></div>
+                </div>
+              )}
+            </div>
+            <div className="h-96">
+              <ResponsiveContainer width="100%" height="100%">
+                <ScatterChart>
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#E5E7EB'} />
+                  <XAxis type="number" dataKey="calories" name="Calorías" domain={[1200, 3000]} stroke={isDark ? '#9CA3AF' : '#6B7280'} tick={{ fill: isDark ? '#D1D5DB' : '#374151' }} label={{ value: 'Calorías (kcal)', position: 'bottom', fill: isDark ? '#D1D5DB' : '#374151' }} />
+                  <YAxis type="number" dataKey="performance" name="Performance" domain={[0, 100]} stroke={isDark ? '#9CA3AF' : '#6B7280'} tick={{ fill: isDark ? '#D1D5DB' : '#374151' }} label={{ value: 'Performance Score (%)', angle: -90, position: 'insideLeft', fill: isDark ? '#D1D5DB' : '#374151' }} />
+                  <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomScatterTooltip />} wrapperStyle={{ outline: 'none' }} />
+                  <ReferenceArea x1={1800} x2={2200} y1={0} y2={100} fill="#10B981" fillOpacity={0.1} stroke="#10B981" strokeOpacity={0.3} strokeDasharray="3 3" />
+                  <Scatter name="Días de Entrenamiento" data={scatterData}>
+                    {scatterData.map((e, i) => (<Cell key={i} fill={colorFor(e.category)} />))}
+                  </Scatter>
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex justify-center gap-6 mt-4 text-xs">
+              <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-yellow-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Bajo (&lt;1800 kcal)</span></div>
+              <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-green-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Óptimo (1800-2200 kcal)</span></div>
+              <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Exceso (&gt;2200 kcal)</span></div>
+            </div>
+            {showLimitedDataNotice && (
+              <p className={`mt-3 text-xs ${isDark?'text-gray-400':'text-gray-500'}`}>Nota: menos de 7 días con entrenos → correlaciones preliminares.</p>
+            )}
+            {scatterData.length === 0 && (
+              <p className={`mt-3 text-xs ${isDark?'text-gray-400':'text-gray-500'}`}>No hay entrenamientos en la ventana seleccionada para calcular correlaciones.</p>
+            )}
           </div>
-        )}
-        <InsightsPanel insights={insights} loading={loadingInsights} isDark={isDark} hideHeader />
-      </section>
-
-      {/* Sección de Estadísticas Semanales - MANTENER */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        {/* Mantener las cards de stats actuales: totalDuration, totalWorkouts, avgEnergyLevel, totalCalories */}
-      </section>
-
-      {/* Sección de Gráficos Tradicionales */}
-      {correlationData.length >= 1 && (
-        <>
-          {showLimitedDataNotice && (
-            <div className={`${isDark ? 'bg-amber-900/20 border border-amber-700 text-amber-200' : 'bg-amber-50 border border-amber-200 text-amber-700'} p-4 rounded-xl mb-2 flex items-start gap-3`}>
-              <AlertCircle size={18} className="mt-0.5" />
-              <div>
-                <p className="text-sm font-medium">Datos limitados</p>
-                <p className="text-xs opacity-90">Tienes {correlationData.length} día(s) con entrenamientos en la ventana analizada. Los gráficos se muestran, pero las conclusiones pueden ser menos confiables. Registra más días para ver tendencias claras.</p>
-              </div>
-            </div>
-          )}
-          {/* Scatter: Calorías vs Performance */}
-          <section>
-            <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <TrendingUp className={`${isDark ? 'text-purple-400' : 'text-purple-600'}`} size={20} />
-                  <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                    Calorías vs Performance
-                  </h3>
-                  <InfoTooltip
-                    isDark={isDark}
-                    title="¿Qué muestra este gráfico?"
-                    description="Este gráfico relaciona tu consumo calórico diario con tu rendimiento en entrenamientos. Cada punto representa un día con entrenamiento."
-                    bullets={[
-                      'Performance Score combina completitud, volumen y energía post-workout',
-                      'Busca la zona óptima (verde) donde tu rendimiento es mejor',
-                      'Si estás en rojo/amarillo, considera ajustar tu ingesta calórica'
-                    ]}
-                    legend={[
-                      { color: 'bg-yellow-500', label: 'Bajo (<1800 kcal)' },
-                      { color: 'bg-green-500', label: 'Óptimo (1800-2200 kcal)' },
-                      { color: 'bg-red-500', label: 'Exceso (>2200 kcal)' }
-                    ]}
-                  />
-                </div>
-              </div>
-              <div className="h-96">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#E5E7EB'} />
-                    <XAxis
-                      type="number"
-                      dataKey="calories"
-                      name="Calorías"
-                      domain={[1200, 3000]}
-                      stroke={isDark ? '#9CA3AF' : '#6B7280'}
-                      tick={{ fill: isDark ? '#D1D5DB' : '#374151' }}
-                      label={{ value: 'Calorías (kcal)', position: 'bottom', fill: isDark ? '#D1D5DB' : '#374151' }}
-                    />
-                    <YAxis
-                      type="number"
-                      dataKey="performance"
-                      name="Performance"
-                      domain={[0, 100]}
-                      stroke={isDark ? '#9CA3AF' : '#6B7280'}
-                      tick={{ fill: isDark ? '#D1D5DB' : '#374151' }}
-                      label={{ value: 'Performance Score (%)', angle: -90, position: 'insideLeft', fill: isDark ? '#D1D5DB' : '#374151' }}
-                    />
-                    <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomScatterTooltip />} wrapperStyle={{ outline: 'none' }} />
-                    <ReferenceArea x1={1800} x2={2200} y1={0} y2={100} fill="#10B981" fillOpacity={0.1} stroke="#10B981" strokeOpacity={0.3} strokeDasharray="3 3" />
-                    <Scatter name="Días de Entrenamiento" data={correlationData}>
-                      {correlationData.map((e, i) => (
-                        <Cell key={i} fill={colorFor(e.category)} />
-                      ))}
-                    </Scatter>
-                  </ScatterChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="flex justify-center gap-6 mt-4 text-xs">
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-yellow-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Bajo (&lt;1800 kcal)</span></div>
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-green-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Óptimo (1800-2200 kcal)</span></div>
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500" /><span className={isDark ? 'text-gray-400' : 'text-gray-600'}>Exceso (&gt;2200 kcal)</span></div>
-              </div>
-            </div>
-          </section>
-
-          {/* Macros por día */}
-          <section>
-            <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <BarChart3 className={`${isDark ? 'text-blue-400' : 'text-blue-600'}`} size={20} />
-                  <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                    Comparativa de Macros
-                  </h3>
-                  <InfoTooltip
-                    isDark={isDark}
-                    title="¿Qué son los macronutrientes?"
-                    description="Los macronutrientes son los nutrientes que tu cuerpo necesita en grandes cantidades. Este gráfico muestra tu distribución diaria."
-                    bullets={[
-                      'Carbohidratos (morado): Principal fuente de energía, especialmente importante antes de entrenar',
-                      'Proteína (azul): Esencial para construir y reparar músculos, recuperación post-workout',
-                      'Grasas (naranja): Necesarias para hormonas y absorción de vitaminas',
-                      'Busca consistencia día a día para mejores resultados'
-                    ]}
-                  />
-                </div>
-              </div>
-              <div className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={correlationData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#E5E7EB'} />
-                    <XAxis dataKey="date" stroke={isDark ? '#9CA3AF' : '#6B7280'} />
-                    <YAxis stroke={isDark ? '#9CA3AF' : '#6B7280'} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="protein" name="Proteína (g)" fill="#3B82F6" />
-                    <Bar dataKey="carbs" name="Carbohidratos (g)" fill="#8B5CF6" />
-                    <Bar dataKey="fats" name="Grasas (g)" fill="#F59E0B" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </section>
-        </>
+        </section>
       )}
 
-      {/* Sección insights antiguos - MANTENER al final */}
-      {correlationData.length > 0 && (
+      {/* Gráfico: Macros por día (incluye días sin entreno) */}
+      {dailyPoints.length > 0 && (
+        <section>
+          <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <BarChart3 className={`${isDark ? 'text-blue-400' : 'text-blue-600'}`} size={20} />
+                <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Comparativa de Macros</h3>
+                <InfoTooltip
+                  isDark={isDark}
+                  title="¿Qué ves aquí?"
+                  description="Distribución diaria de macronutrientes registrada. Busca consistencia."
+                />
+              </div>
+            </div>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dailyPoints}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#E5E7EB'} />
+                  <XAxis dataKey="date" stroke={isDark ? '#9CA3AF' : '#6B7280'} />
+                  <YAxis stroke={isDark ? '#9CA3AF' : '#6B7280'} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="protein_g" name="Proteína (g)" fill="#3B82F6" />
+                  <Bar dataKey="carbs_g" name="Carbohidratos (g)" fill="#8B5CF6" />
+                  <Bar dataKey="fats_g" name="Grasas (g)" fill="#F59E0B" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Resumen numérico */}
+      {dailyPoints.length > 0 && (
         <section>
           <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
             <div className="flex items-center gap-3 mb-4">
-              <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                Resumen Numérico
-              </h3>
-              <InfoTooltip
-                isDark={isDark}
-                title="¿Cómo interpretar estas métricas?"
-                description="Estas son estadísticas calculadas en base a tus registros de los últimos 14 días."
-                bullets={[
-                  'Días en zona óptima: Días donde consumiste 1800-2200 kcal (ideal para la mayoría)',
-                  'Performance promedio: Tu score de rendimiento general (0-100%), mayor es mejor',
-                  'Energía promedio: Tu nivel de energía reportado después de entrenar (escala 1-10)',
-                  'Usa estos números para entender si vas por buen camino'
-                ]}
-              />
+              <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Resumen Numérico</h3>
+              <InfoTooltip isDark={isDark} title="¿Cómo leer esto?" description={`Estadísticas de los últimos ${windowDays} días.`} />
             </div>
-            <ul className={isDark ? 'text-gray-300' : 'text-gray-700'}>
-              <li className="mb-1">• Días en zona óptima: {correlationData.filter(d => d.category === 'optimo').length}</li>
-              <li className="mb-1">• Performance promedio: {Math.round(correlationData.reduce((s, d) => s + d.performance, 0) / correlationData.length)}%</li>
-              <li>• Energía promedio: {Math.round((correlationData.reduce((s, d) => s + d.energyLevel, 0) / correlationData.length) * 10) / 10}/10</li>
+            <ul className={isDark ? 'text-gray-300 space-y-1' : 'text-gray-700 space-y-1'}>
+              <li>• Días en zona óptima: {dailyPoints.filter(d => d.kcal >= 1800 && d.kcal <= 2200).length}</li>
+              <li>• Performance promedio (sólo días con entreno): {scatterData.length>0 ? Math.round(scatterData.reduce((s,d)=>s+d.performance,0)/scatterData.length) : 0}%</li>
+              <li>• CV calorías: {(() => { const arr = dailyPoints.map(d=>d.kcal); const avg = arr.reduce((s,v)=>s+v,0)/(arr.length||1); const std = Math.sqrt(arr.reduce((s,v)=>s+(v-avg)**2,0)/(arr.length||1)); return avg>0 ? (std/avg*100).toFixed(1) : '0.0'; })()}%</li>
+              <li>• r(kcal↔perf): {scatterData.length>=2 ? rCalPerf.toFixed(2) : 'N/D'} {scatterData.length>=2 && (<span className="opacity-70">(n={nCalPerf})</span>)}</li>
             </ul>
           </div>
         </section>
       )}
-      
     </div>
   );
 }
