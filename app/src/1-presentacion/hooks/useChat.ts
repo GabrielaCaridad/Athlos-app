@@ -1,16 +1,16 @@
-// En este hook centralizo la lógica del chat con Apolo.
-// Importo hooks de React para manejar estado, efectos y referencias.
+// Propósito: manejar estado y envío de mensajes del chat Apolo.
+// Contexto: usa Cloud Function 'chat' (callable) y toasts para feedback.
 import { useCallback, useEffect, useRef, useState } from 'react';
 // Uso las Cloud Functions de Firebase para enviar los mensajes al backend.
-import { httpsCallable, HttpsCallable } from 'firebase/functions';
-// Importo la instancia de Functions inicializada en mi proyecto Firebase.
+import { httpsCallable, HttpsCallable } from 'firebase/functions'; // Ojo: requiere inicialización de Firebase Functions
+// Instancia de Functions inicializada en config Firebase
 import { functions } from '../../3-acceso-datos/firebase/config';
-// También necesito el usuario actual para validar sesión antes de enviar mensajes.
+// Usuario actual para validar sesión antes de enviar
 import { auth } from '../../3-acceso-datos/firebase/config';
+// Toasts globales para feedback visible (z-index alto desde provider)
+import { useToast } from '../componentes/comun/ToastProvider';
 
 export interface Message {
-  // Cada mensaje que se muestra en el chat tiene un id, el texto y su metadata.
-  // "isUser" me ayuda a diferenciar visualmente si lo envió el usuario o el asistente.
   id: string;
   text: string;
   isUser: boolean;
@@ -30,38 +30,43 @@ type ChatResult = {
   wasFromCache?: boolean;
 };
 
-// Este es el payload que envío a la Cloud Function: el texto del mensaje y, opcionalmente,
-// el identificador de sesión del chat para mantener el contexto.
+// Payload enviado al backend: texto + sessionId opcional (contexto)
 type ChatPayload = { message: string; sessionId?: string };
 
 export const useChat = () => {
-  // Mensajes acumulados en la conversación
+  // Qué hace: gestiona ciclo de vida del chat (envío, respuestas, errores, rate limit).
+  // Por qué: encapsular lógica para reutilizar en UI sin duplicar handlers.
+  // Ojo: valida auth antes de enviar; respeta límites (RESOURCE_EXHAUSTED); diferencia modo general/personalizado según backend.
+  const toast = useToast();
+  // Estado: historial de mensajes
   const [messages, setMessages] = useState<Message[]>([]);
-  // Estado de carga mientras espero la respuesta del backend
+  // Estado: bandera de carga
   const [isLoading, setIsLoading] = useState(false);
-  // Mensaje de error para mostrar en el UI cuando algo falla
+  // Estado: último error de envío
   const [error, setError] = useState<string | null>(null);
-  // Identificador de sesión que me permite mantener el contexto del chat en el backend
+  // Estado: sessionId (contexto persistente en backend)
   const [sessionId, setSessionId] = useState<string | null>(null);
-  // Flag para indicar si el usuario alcanzó un límite de uso
+  // Estado: límite alcanzado (rate limit)
   const [isRateLimited, setIsRateLimited] = useState(false);
-  // Referencia al último mensaje del usuario aún pendiente (útil para reintentos, etc.)
+  // Ref: último mensaje usuario para reintentos
   const pendingUserMsgRef = useRef<Message | null>(null);
-  // Mantengo una referencia a la función callable para evitar recrearla en cada render
+  // Ref: Cloud Function callable
   const chatFnRef = useRef<HttpsCallable<ChatPayload, ChatResult> | null>(null);
 
-  // Inicializo la Cloud Function de chat una sola vez al montar el hook.
+  // Efecto: inicializa callable solo una vez
   useEffect(() => {
   chatFnRef.current = httpsCallable<ChatPayload, ChatResult>(functions, 'chat');
     console.log('✅ Chat function initialized');
   }, []);
 
-  // Agrego un mensaje nuevo al arreglo de mensajes.
+  // Función: agregar mensaje al historial
   const addMessage = useCallback((m: Message) => {
     setMessages(prev => [...prev, m]);
   }, []);
 
-  // Envía el mensaje al backend, valida sesión y maneja errores comunes.
+  // Función: envía mensaje al backend
+  // Por qué: encapsula validaciones (longitud, auth) y manejo de respuesta.
+  // Ojo: limita a 500 chars; maneja códigos comunes (timeout, rate limit, auth).
   const sendMessage = useCallback(async (text: string) => {
     const content = (text || '').trim();
     if (!content) return;
@@ -73,6 +78,7 @@ export const useChat = () => {
     const currentUser = auth.currentUser;
     if (!currentUser) {
       setError('Debes iniciar sesión para usar el chat.');
+      toast.error('Debes iniciar sesión para usar el chat.');
       addMessage({
         id: `err_${Date.now()}`,
         text: 'Debes iniciar sesión para usar el chat.',
@@ -83,9 +89,8 @@ export const useChat = () => {
       return;
     }
 
-    console.log('🚀 Enviando mensaje:', content);
-    console.log('🔑 Usuario autenticado:', currentUser.uid);
-    console.log('📝 SessionId:', sessionId);
+  // Debug: datos básicos de envío
+  console.log('� [Chat] Enviando', { content, uid: currentUser.uid, sessionId });
 
     setError(null);
     setIsRateLimited(false);
@@ -106,23 +111,22 @@ export const useChat = () => {
         throw new Error('Funciones no inicializadas');
       }
 
-      console.log('📡 Llamando a Cloud Function con:', { 
-        message: content, 
-        sessionId: sessionId || 'nuevo' 
-      });
+      // Llamada a backend callable
+      console.log('📡 [Chat] Payload', { message: content, sessionId: sessionId || 'nuevo' });
 
       const result = await chat({ 
         message: content, 
         sessionId: sessionId || undefined 
       });
 
-      console.log('✅ Respuesta recibida:', result.data);
+  // Debug: respuesta principal
+  console.log('✅ [Chat] Respuesta', result.data);
 
-      const res = result.data;
+  const res = result.data;
       
       if (res.sessionId && res.sessionId !== sessionId) {
         setSessionId(res.sessionId);
-        console.log('📝 SessionId actualizado:', res.sessionId);
+  console.log('📝 [Chat] sessionId actualizado:', res.sessionId);
       }
 
       const botMsg: Message = {
@@ -136,7 +140,7 @@ export const useChat = () => {
       addMessage(botMsg);
 
     } catch (e: unknown) {
-      // Manejo de errores con mensajes más claros para el usuario final
+  // Manejo de errores: mapear códigos a mensaje amigable
       const err = e as { code?: string; message?: string };
       console.error('❌ Error completo:', err);
       console.error('❌ Error code:', err?.code);
@@ -145,7 +149,7 @@ export const useChat = () => {
       const code: string = err?.code || err?.message || 'unknown';
       let msg = 'Error al enviar el mensaje. Intenta de nuevo.';
 
-      // Manejo mejorado de timeouts
+  // Timeouts / rate limit / auth
       if (code === 'TIMEOUT' || code.toLowerCase().includes('timeout') || code.toUpperCase().includes('DEADLINE')) {
         msg = 'La respuesta tardó demasiado. Intenta con una pregunta más simple.';
       } else if (code.includes('unauthenticated') || code.includes('UNAUTHENTICATED')) {
@@ -162,6 +166,7 @@ export const useChat = () => {
       }
 
       setError(msg);
+      toast.error(msg);
       addMessage({
         id: `err_${Date.now()}`,
         text: msg,
@@ -173,16 +178,16 @@ export const useChat = () => {
       setIsLoading(false);
       pendingUserMsgRef.current = null;
     }
-  }, [addMessage, sessionId]);
+  }, [addMessage, sessionId, toast]);
 
-  // Limpia el historial del chat y estados de error/límite
+  // Función: limpiar historial y estados
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
     setIsRateLimited(false);
   }, []);
 
-  // Reintenta enviando el último mensaje del usuario si existe
+  // Función: reintenta último mensaje usuario
   const retryLastMessage = useCallback(() => {
     const lastUser = [...messages].reverse().find(m => m.isUser);
     if (lastUser) {

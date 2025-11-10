@@ -6,7 +6,6 @@
   categoría y calorías por minuto. Incluye caché en memoria y manejo de
   errores específico por códigos HTTP.
 
-
 */
 
 // Configuración de la API

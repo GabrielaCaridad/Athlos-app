@@ -1,3 +1,14 @@
+// Análisis semanal proactivo (Cloud Functions v2)
+// ------------------------------------------------------------
+// Objetivo: generar un mensaje breve y motivador resumiendo la semana
+// del usuario (entrenos, energía, adherencia nutricional) y persistirlo
+// como notificación proactiva en 'chat_apolo'.
+// Notas clave:
+// - Ventana: semana ISO actual [lunes 00:00, lunes siguiente 00:00] en UTC.
+// - Fuentes: workouts (createdAt >= inicio) y foods (por date string >= inicioISO).
+// - OpenAI (gpt-4o-mini) para redactado; respuesta pequeña (máx 6 frases).
+// TODO(migración): Cambiar 'userFoodEntries' → 'foodDatabase' cuando confirmemos
+//   100% los datos unificados en producción.
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2/options';
@@ -70,6 +81,7 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
   const finISO = end.toISOString();
 
   // Foods in last 7 days (by date string >= start date)
+  // Ojo: actualmente lee de 'userFoodEntries'. Ver TODO de migración arriba.
   const startDateStr = inicioISO.split('T')[0];
   const foodsSnap = await db.collection('userFoodEntries')
     .where('userId', '==', userId)
@@ -84,7 +96,7 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
     mealCount += 1;
   }
 
-  // Workouts in the last week
+  // Workouts in the last week (filtrado por createdAt >= inicio)
   const workoutsSnap = await db.collection('workouts')
     .where('userId', '==', userId)
     .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(start))

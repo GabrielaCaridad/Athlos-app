@@ -16,6 +16,7 @@ import UserProfile from './componentes/comun/UserProfile';
 import ThemeToggle from './componentes/comun/ThemeToggle'; 
 import FoodTracker from './componentes/alimentacion/FoodTracker';
 import WorkoutTracker from './componentes/entrenamiento/WorkoutTracker';
+import ToastHost from './componentes/comun/ToastHost';
 import ChatBot from './componentes/chatbot/ChatBot';
 import Dashboard from './componentes/dashboard/Dashboard';
 import ConfiguracionPage from './componentes/configuracion/ConfiguracionPage';
@@ -44,6 +45,8 @@ function App() {
     <div className={`min-h-screen transition-all duration-500 ${
       isDark ? 'bg-gray-900' : 'bg-gray-50'
     }`}>
+      {/* Portal global de toasts */}
+      <ToastHost />
       <div className="flex h-screen overflow-hidden">
         {isMobileMenuOpen && (
           <div 

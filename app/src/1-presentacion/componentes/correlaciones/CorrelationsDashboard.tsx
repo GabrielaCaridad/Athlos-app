@@ -99,7 +99,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     console.log('📊 [Correlaciones] Rango de fechas:', { desde: first, hasta: last });
   }, [correlationData]);
   const loading = loadingUserData;
-  const { insights, loading: loadingInsights } = usePersonalInsights(user?.uid || '');
+  const { insights, loading: loadingInsights, error: insightsError } = usePersonalInsights(user?.uid || '');
 
   // Patrones (insights) logs
   useEffect(() => {
@@ -141,21 +141,8 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     );
   }
 
-  if (correlationData.length < 7 && (!insights || insights.length === 0)) {
-    // Datos insuficientes para gráficos: menos de 7 días con entrenamientos y sin insights
-    return (
-      <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
-        <div className="text-center py-10">
-          <AlertCircle size={48} className={`mx-auto mb-4 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} />
-          <h3 className={`text-lg font-semibold mb-2 ${isDark ? 'text-white' : 'text-gray-800'}`}>Datos Insuficientes</h3>
-          <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-            Necesitas al menos 7 días con entrenamientos para ver correlaciones. Actualmente: {correlationData.length}.
-          </p>
-        </div>
-        
-      </div>
-    );
-  }
+  // Aviso suave si hay pocos días (mostramos gráficos pero avisamos)
+  const showLimitedDataNotice = correlationData.length > 0 && correlationData.length < 7;
 
   // Helper de color por categoría calórica
   const colorFor = (c: CalorieCategory) => (c === 'optimo' ? '#10B981' : c === 'bajo' ? '#F59E0B' : '#EF4444');
@@ -180,6 +167,11 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
             ]}
           />
         </div>
+        {insightsError && (
+          <div className={`mb-3 p-3 rounded-xl text-sm ${isDark ? 'bg-red-900/30 border border-red-700 text-red-200' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+            {insightsError}
+          </div>
+        )}
         <InsightsPanel insights={insights} loading={loadingInsights} isDark={isDark} hideHeader />
       </section>
 
@@ -188,9 +180,18 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
         {/* Mantener las cards de stats actuales: totalDuration, totalWorkouts, avgEnergyLevel, totalCalories */}
       </section>
 
-      {/* Sección de Gráficos Tradicionales - MANTENER pero más abajo */}
-      {correlationData.length >= 7 && (
+      {/* Sección de Gráficos Tradicionales */}
+      {correlationData.length >= 1 && (
         <>
+          {showLimitedDataNotice && (
+            <div className={`${isDark ? 'bg-amber-900/20 border border-amber-700 text-amber-200' : 'bg-amber-50 border border-amber-200 text-amber-700'} p-4 rounded-xl mb-2 flex items-start gap-3`}>
+              <AlertCircle size={18} className="mt-0.5" />
+              <div>
+                <p className="text-sm font-medium">Datos limitados</p>
+                <p className="text-xs opacity-90">Tienes {correlationData.length} día(s) con entrenamientos en la ventana analizada. Los gráficos se muestran, pero las conclusiones pueden ser menos confiables. Registra más días para ver tendencias claras.</p>
+              </div>
+            </div>
+          )}
           {/* Scatter: Calorías vs Performance */}
           <section>
             <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>

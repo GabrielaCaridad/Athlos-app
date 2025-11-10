@@ -1,16 +1,7 @@
-/**
- * WorkoutTracker – Registro y seguimiento de entrenamientos
- *
- * Qué hace
- * - Permite iniciar, pausar, reanudar y finalizar una sesión con cronómetro y auto-guardado.
- * - Crea rutinas desde plantillas o seleccionando ejercicios (API externa) y arranca con energía pre-entreno.
- * - Muestra historial, métricas semanales y utilidades como timers de descanso por ejercicio.
- *
- * Fuentes de datos
- * - workoutService y workoutTemplateService (Firestore): sesiones, plantillas y estadísticas.
- * - exerciseAPIService: catálogo/búsqueda de ejercicios (traduce ES↔EN por grupos musculares).
- * - useAuth: usuario actual para asociar registros.
- */
+// Propósito: iniciar/gestionar entrenamientos, registrar sets y ver historial y métricas.
+// Contexto: usa workoutService/workoutTemplateService (Firestore) y exerciseAPIService (catálogo ejercicios).
+//           Índices indirectos: workouts(userId+createdAt DESC), workouts(userId+completedAt DESC) en listados.
+// Nota: toasts se muestran sobre la UI (provider con z-index alto) para confirmaciones/errores.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Timestamp } from 'firebase/firestore';
 import {
@@ -37,7 +28,13 @@ import {
   HelpCircle
 } from 'lucide-react';
 import Tooltip from '../comun/Tooltip';
-import { useAuth } from '../../hooks/useAuth';
+import { useToast } from '../../componentes/comun/ToastProvider';
+// Confirmación CP: finalización con campos incompletos
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction
+} from "@/components/ui/alert-dialog";
+import { useAuth } from '@/1-presentacion/hooks/useAuth';
 import {
   workoutService,
   WorkoutSession,
@@ -53,7 +50,7 @@ interface WorkoutTrackerProps {
   isDark: boolean;
 }
 
-// Utilidad para formatear duración
+// Qué hace: formatea segundos a h/m/s legible
 function formatDuration(seconds: number | undefined): string {
   const s = Math.max(0, seconds || 0);
   const h = Math.floor(s / 3600);
@@ -73,7 +70,6 @@ const DEFAULT_BODY_PART_CHIPS_ES = [
 
 // Tipos internos de UI
 type ToastType = 'success' | 'error' | 'info';
-interface ToastItem { id: string; type: ToastType; message: string }
 
 interface RestTimerState { running: boolean; remaining: number; initial: number }
 
@@ -115,6 +111,9 @@ const scoreMessage = (score: number) => {
 };
 
 // Componente principal
+// Qué hace: orquesta estado de la sesión, timers, carga de plantillas/historial y acciones CRUD.
+// Por qué: centralizar lógica de entrenamiento en una vista única.
+// Ojo: requiere auth (user.uid) para todas las operaciones en Firestore.
 export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const { user } = useAuth();
 
@@ -146,6 +145,12 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [showPreEnergyModal, setShowPreEnergyModal] = useState(false);
   const [preEnergyLevel, setPreEnergyLevel] = useState<number | null>(null);
   const [pendingNewWorkout, setPendingNewWorkout] = useState<Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'> | undefined>(undefined);
+  // Confirmación CP: finalización con campos incompletos
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingFinalize, setPendingFinalize] = useState(false);
+  // Duplicada al iniciar plantilla: confirmación antes de arrancar si ya se completó hoy
+  const [dupStartOpen, setDupStartOpen] = useState(false);
+  const [pendingTemplateStart, setPendingTemplateStart] = useState<Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'> | null>(null);
 
   // Búsqueda/API ejercicios
   const [searchTerm, setSearchTerm] = useState('');
@@ -162,6 +167,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [manualAddNotice, setManualAddNotice] = useState<string | null>(null);
   const [saveAsTemplate, setSaveAsTemplate] = useState(true);
   const [routineName, setRoutineName] = useState('Nueva rutina');
+  const [createErrors, setCreateErrors] = useState<{ name?: string; exercises?: string }>({});
   // Buffers de inputs para permitir edición libre y confirmar en blur, conservando flechas
   const [inputBuffers, setInputBuffers] = useState<Record<string, { weight?: string; reps?: string }>>({});
 
@@ -169,21 +175,22 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [dateFilter, setDateFilter] = useState<string>('');
   // const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set()); // expansión inline (reemplazado por modal)
 
-  // Toasts
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // Toasts (usar host global vía ToastProvider)
+  const toast = useToast();
   const pushToast = useCallback((type: ToastType, message: string) => {
-    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setToasts(t => [...t, { id, type, message }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
-  }, []);
+    if (type === 'success') return toast.success(message);
+    if (type === 'error') return toast.error(message);
+    return toast.info(message);
+  }, [toast]);
 
-  // Carga inicial de datos
+  // Efecto: carga inicial de datos (workouts, plantillas, stats)
   useEffect(() => {
     let mounted = true;
     (async () => {
       if (!user?.uid) return;
       try {
         setLoading(true);
+        // Índice requerido (consultas internas del servicio): workouts(userId ASC, createdAt DESC)
         const [ws, ts, stats] = await Promise.all([
           workoutService.getUserWorkouts(user.uid),
           workoutTemplateService.getUserTemplates(user.uid),
@@ -506,6 +513,26 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     return () => window.clearInterval(id);
   }, [restEditState]);
 
+  // Duplicada al iniciar plantilla: existe finalizada hoy para esta plantilla
+  const existsCompletedTodayForTemplate = useCallback((list: WorkoutSession[], templateId?: string, templateName?: string) => {
+    const todayKey = workoutService.dayKeyLocal(new Date());
+    const norm = (s?: string) => (s || '').trim().toLowerCase();
+    return list.some(w => {
+      if (w.isActive) return false;
+      const d = workoutService.getEffectiveDate(w);
+      if (!d) return false;
+      if (workoutService.dayKeyLocal(d) !== todayKey) return false;
+      if (templateId) {
+        if (w.templateId) return w.templateId === templateId;
+        // Fallback por nombre si sesiones históricas no tenían templateId guardado
+        if (templateName) return norm(w.name) === norm(templateName);
+      }
+      if (!templateId && templateName) return norm(w.name) === norm(templateName);
+      // Si hay templateId pero el workout no lo tiene almacenado, no contamos como duplicado
+      return false;
+    });
+  }, []);
+
   // Iniciar desde plantilla
   const startFromTemplate = useCallback(async (tpl: WorkoutTemplate) => {
     if (!user?.uid) return;
@@ -524,15 +551,23 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
         name: tpl.name,
         duration: 0,
         isActive: true,
-        exercises
-      };
+        exercises,
+        // Duplicada al iniciar plantilla: incluir templateId en los datos iniciales
+        templateId: tpl.id
+      } as Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'>;
+      // Duplicada al iniciar plantilla: interceptar si hoy ya se completó esta plantilla
+      if (existsCompletedTodayForTemplate(history, tpl.id, tpl.name)) {
+        setPendingTemplateStart(newWorkout);
+        setDupStartOpen(true);
+        return;
+      }
       // Pedir energía inicial antes de crear
       openPreEnergyModal(newWorkout);
     } catch (e: unknown) {
       console.error('Error preparing workout', e);
       pushToast('error', 'No se pudo preparar el entrenamiento');
     }
-  }, [user?.uid, openPreEnergyModal, pushToast]);
+  }, [user?.uid, openPreEnergyModal, pushToast, existsCompletedTodayForTemplate, history]);
 
   // Pausar/Reanudar entrenamiento
   const togglePauseWorkout = useCallback(() => {
@@ -551,6 +586,53 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     if (!activeWorkout) return;
     setShowFinishModal(true);
   }, [activeWorkout]);
+
+  // Confirmación CP: finalización con campos incompletos
+  const hasIncomplete = useCallback((w: WorkoutSession) => (w.exercises || []).some(ex => {
+    if (!ex.completed) return true;
+    if (ex.setsDetail?.length) {
+      return ex.setsDetail.some((s: { reps?: number; weight?: number; done?: boolean } | undefined | null) =>
+        s == null ||
+        s.reps == null || s.reps <= 0 ||
+        s.weight == null || s.weight < 0 ||
+        !s.done
+      );
+    }
+    return (ex.sets ?? 0) <= 0 || (ex.reps ?? 0) <= 0;
+  }), []);
+
+  const handleFinalizeClick = useCallback(() => {
+    if (activeWorkout && hasIncomplete(activeWorkout)) {
+      setConfirmOpen(true);
+    } else {
+      // continuar con el flujo actual (selección de energía y finalizar)
+      finishWorkout();
+    }
+  }, [activeWorkout, hasIncomplete, finishWorkout]);
+
+  const doFinalize = useCallback(async () => {
+    try {
+      setPendingFinalize(true);
+      // En este flujo conservamos el diseño existente: abrimos el modal de energía
+      // para completar postEnergy antes de finalizar realmente.
+      setConfirmOpen(false);
+      finishWorkout();
+    } catch (e) {
+      console.error(e);
+      pushToast('error', 'No se pudo finalizar el entrenamiento');
+    } finally {
+      setPendingFinalize(false);
+    }
+  }, [finishWorkout, pushToast]);
+
+  // Duplicada al iniciar plantilla: confirmar e iniciar
+  const handleConfirmStartTemplate = useCallback(() => {
+    setDupStartOpen(false);
+    if (pendingTemplateStart) {
+      openPreEnergyModal(pendingTemplateStart);
+      setPendingTemplateStart(null);
+    }
+  }, [pendingTemplateStart, openPreEnergyModal]);
 
   const confirmFinish = useCallback(async () => {
     if (!user?.uid || !activeWorkout?.id || selectedEnergy == null) return;
@@ -641,10 +723,27 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     return selectedExercises.reduce((sum, ex) => sum + ((ex.defaultSets ?? 3) * 5), 0);
   }, [selectedExercises]);
 
+  // Limpiar errores al agregar ejercicios
+  useEffect(() => {
+    if (selectedExercises.length > 0) {
+      setCreateErrors(prev => ({ ...prev, exercises: undefined }));
+    }
+  }, [selectedExercises.length]);
+
   // Crea una plantilla (opcional) y prepara una sesión nueva a partir de la selección actual
   const saveCartAll = useCallback(async () => {
     if (!user?.uid) return;
-    if (selectedExercises.length === 0) { pushToast('info', 'Agrega ejercicios a la lista'); return; }
+    const name = (routineName || '').trim();
+    let hasError = false;
+    if (!name) {
+      setCreateErrors(prev => ({ ...prev, name: 'El nombre de la rutina es obligatorio.' }));
+      hasError = true;
+    }
+    if (selectedExercises.length === 0) {
+      setCreateErrors(prev => ({ ...prev, exercises: 'Agrega al menos un ejercicio.' }));
+      hasError = true;
+    }
+    if (hasError) return;
     try {
       // Mapear a TemplateExercise[] con defaults
       const tplExercises: TemplateExercise[] = selectedExercises.map(ex => ({
@@ -671,7 +770,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
         restTime: e.restTime || 60,
         setsDetail: Array.from({ length: e.sets }, (_, i) => ({ reps: e.reps, weight: e.weightKg || 0, done: false, type: 'N', serieNumber: i + 1 }))
       }));
-      const newWorkout: Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'> = { name: routineName || 'Mi rutina', duration: 0, isActive: true, exercises };
+      const newWorkout: Omit<WorkoutSession, 'id' | 'userId' | 'createdAt'> = { name: name || 'Mi rutina', duration: 0, isActive: true, exercises };
       openPreEnergyModal(newWorkout);
       setShowCreateModal(false);
     } catch (e: unknown) {
@@ -1078,7 +1177,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                   <RotateCcw size={18} /> Reiniciar
                 </button>
                 <button
-                  onClick={finishWorkout}
+                  onClick={handleFinalizeClick}
                   className={`bg-gray-300 hover:bg-gray-400 text-gray-700 px-3 py-3 rounded-lg text-sm font-semibold flex items-center gap-2`}
                 >
                   <StopCircle size={18} /> Finalizar
@@ -1279,14 +1378,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
         activeWorkout ? <ActiveWorkoutView /> : <DashboardView />
       )}
 
-      {/* Toasts */}
-      <div className="fixed top-4 right-4 z-50 space-y-2">
-        {toasts.map(t => (
-          <div key={t.id} className={`rounded-xl px-4 py-2 shadow ${t.type === 'success' ? 'bg-green-600 text-white' : t.type === 'error' ? 'bg-red-600 text-white' : isDark ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'} border ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-            {t.message}
-          </div>
-        ))}
-      </div>
+      {/* Toasts locales removidos: ahora se usan via <ToastHost /> global */}
 
       {/* Modal crear rutina*/}
       {showCreateModal && (
@@ -1372,7 +1464,8 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <label htmlFor="custom-workout-name" className="sr-only">Nombre de la rutina</label>
-                  <input id="custom-workout-name" name="custom-workout-name" value={routineName} onChange={(e) => setRoutineName(e.target.value)} className={`${isDark ? 'bg-gray-800 text-white border-gray-700 ring-offset-gray-900' : 'bg-gray-100 text-gray-900 border-gray-300 ring-offset-white'} flex-1 rounded-lg px-3 py-2 border focus:ring-2 ring-purple-500 ring-offset-2`} placeholder="Nombre de la rutina" />
+                  <input id="custom-workout-name" name="custom-workout-name" value={routineName} onChange={(e) => { setRoutineName(e.target.value); if (e.target.value.trim()) setCreateErrors(prev => ({ ...prev, name: undefined })); }} className={`${isDark ? 'bg-gray-800 text-white border-gray-700 ring-offset-gray-900' : 'bg-gray-100 text-gray-900 border-gray-300 ring-offset-white'} flex-1 rounded-lg px-3 py-2 border focus:ring-2 ring-purple-500 ring-offset-2`} placeholder="Nombre de la rutina" />
+                  {createErrors.name && (<p className="text-red-600 text-sm mt-1">{createErrors.name}</p>)}
                 </div>
                 <div className={`${isDark ? 'bg-gray-800' : 'bg-gray-50'} rounded-lg p-3 mb-3`}>
                   <h4 className={`text-sm font-semibold mb-2 ${isDark ? 'text-white' : 'text-gray-900'}`}>Agregar ejercicio manual</h4>
@@ -1430,6 +1523,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                       ))}
                     </div>
                   )}
+                  {createErrors.exercises && (<p className="text-red-600 text-sm mt-1">{createErrors.exercises}</p>)}
                 </div>
                 <div className="mt-3 flex items-center justify-between">
                   <div className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Calorías estimadas: {Math.round(estimatedSelectedCalories)} kcal</div>
@@ -1509,6 +1603,40 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
           </div>
         </div>
       )}
+
+      {/* Confirmación CP: finalización con campos incompletos */}
+      {/* Duplicada al iniciar plantilla */}
+      <AlertDialog open={dupStartOpen} onOpenChange={(open) => { setDupStartOpen(open); if (!open) setPendingTemplateStart(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ya iniciaste y finalizaste esta plantilla hoy</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Deseas iniciarla nuevamente?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Volver</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmStartTemplate}>Continuar e iniciar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Quedan campos sin completar</AlertDialogTitle>
+            <AlertDialogDescription>
+              Hay series sin marcar o con valores faltantes. ¿Deseas finalizar de todos modos?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Volver</AlertDialogCancel>
+            <AlertDialogAction onClick={doFinalize} disabled={pendingFinalize}>
+              Finalizar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Modal Historial Detalle */}
       {showHistoryModal && (() => {

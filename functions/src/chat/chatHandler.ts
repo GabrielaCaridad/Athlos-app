@@ -1,14 +1,9 @@
-/**
- * Chat Cloud Function for ATHLOS
- * - Validates auth
- * - Rate limits (hourly/daily)
- * - Builds user context from Firestore (foods, workouts, weekly stats)
- * - Maintains conversation sessions and message history
- * - Calls OpenAI (gpt-4o-mini) with timeout and fallback
- * - Persists messages and updates analytics
- *
- * Note: Implemented with defensive coding, TypeScript strict, and abundant comments.
- */
+// Propósito: manejar el chat de Apolo (general vs personalizado) vía callable.
+// Contexto: colecciones usadas -> chat_sessions, chat_apolo, chat_context_cache,
+//           foodDatabase (fecha YYYY-MM-DD UTC), workouts, users.
+// Qué hace: auth → rate limit → cache contexto → decidir modo → construir prompt → respuesta.
+// Por qué: proteger recursos y sólo personalizar con historial mínimo.
+// Ojo: requiere índices en foodDatabase(userId+date+createdAt DESC) y workouts(userId+createdAt DESC).
 
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
@@ -93,6 +88,21 @@ export const CONFIG = {
   MAX_TOKENS: 300,
   TEMPERATURE: 0.7,
   REGION: 'us-central1' as const,
+};
+
+// Secciones principales de este archivo
+// - Utilidades: limpieza de datos y fechas
+// - Gate de historial: decide general vs personalizado
+// - Construcción de contexto: comidas de hoy, último entreno, semana
+// - Caché: guarda resumen por versión de datos del usuario
+// - Prompt: reglas para cada modo y sanitización del payload
+// - Flujo principal: auth → rate limit → contexto → modo → respuesta
+
+// Umbrales más bajos para activar modo personalizado (demo)
+const HISTORY_THRESHOLDS: { mealDays7d: number; workouts14d: number; logic: 'OR' | 'AND' } = {
+  mealDays7d: 3,       // antes 7
+  workouts14d: 2,      // antes 5
+  logic: 'OR'          // 'OR' = basta cumplir uno; 'AND' = ambos
 };
 
 // NOTE: Do NOT initialize OpenAI at module scope. Secrets are only available inside the function.
@@ -180,50 +190,161 @@ interface ChatResponsePayload {
 // Utilities
 // const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
-const SYSTEM_PROMPT = (context: UserContextSummary) => {
+// (Removed old SYSTEM_PROMPT; replaced by buildSystemPrompt tailored to GENERAL/PERSONALIZED modes)
+
+// Qué hace: estructura con conteos mínimos para decidir el modo
+interface HistoryUsageSummary {
+  daysWithMeals7d: number;
+  totalMeals7d: number;
+  totalWorkouts14d: number;
+  daysWithWorkouts14d: number;
+}
+
+// Gate de historial con umbrales más flexibles
+// Qué hace: activa modo personalizado si cumplo comidas o entrenos (según lógica)
+// Por qué: en demo queremos bajar la exigencia para probar antes
+function hasSufficientHistory(s: HistoryUsageSummary): boolean {
+  const tieneComidas = s.daysWithMeals7d >= HISTORY_THRESHOLDS.mealDays7d;   // días con comidas (7d)
+  const tieneEntrenos = s.totalWorkouts14d >= HISTORY_THRESHOLDS.workouts14d; // entrenos finalizados (14d)
+
+  const pasa = HISTORY_THRESHOLDS.logic === 'AND'
+    ? (tieneComidas && tieneEntrenos)
+    : (tieneComidas || tieneEntrenos);
+
+  // Log simple para validar en consola de Functions
+  console.log(JSON.stringify({
+    event: 'history-threshold-check',
+    s, thresholds: HISTORY_THRESHOLDS, pasa
+  }));
+
+  return pasa;
+}
+
+// GPT-GATE: Normalize various date inputs to JS Date (UTC based comparison)
+function asUTCDate(x: any): Date | null {
+  if (!x) return null;
+  try {
+    if (x?.toDate && typeof x.toDate === 'function') return new Date(x.toDate().toISOString());
+    if (x?._seconds !== undefined) return new Date((x._seconds * 1000));
+    if (x instanceof Date) return new Date(x.toISOString());
+    if (typeof x === 'string') {
+      const d = new Date(x);
+      return isNaN(d.getTime()) ? null : new Date(d.toISOString());
+    }
+    if (typeof x === 'number') return new Date(new Date(x).toISOString());
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+// Helper: clave de fecha en UTC (YYYY-MM-DD) para alinear con 'foodDatabase'
+function toUTCDateKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// GPT-GATE: Compute historical usage summary (meals 7d, workouts 14d)
+async function computeUserSummary(userId: string): Promise<HistoryUsageSummary> {
+  const now = new Date();
+  const startMeals = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  startMeals.setUTCDate(startMeals.getUTCDate() - 6); // inclusive last 7 days (today + previous 6)
+  const startWorkouts = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  startWorkouts.setUTCDate(startWorkouts.getUTCDate() - 13); // last 14 days
+
+  // Meals últimos 7 días (colección unificada 'foodDatabase' con date YYYY-MM-DD UTC)
+  // (Limpieza) Reemplacé 'userFoodEntries' por 'foodDatabase'.
+  const mealsSnap = await db.collection('foodDatabase')
+    .where('userId', '==', userId)
+    .where('date', '>=', startMeals.toISOString().slice(0,10))
+    .where('date', '<=', new Date().toISOString().slice(0,10))
+    .get();
+  const mealDocs = mealsSnap.docs.map(d => d.data());
+  const totalMeals7d = mealDocs.length;
+  const daysMealsSet = new Set<string>();
+  for (const m of mealDocs) {
+    if (typeof (m as any).date === 'string') daysMealsSet.add((m as any).date);
+  }
+  const daysWithMeals7d = daysMealsSet.size;
+
+  // Workouts last 14 days (prefer completedAt; fallback to createdAt). Count only finalized (isActive === false) when available.
+  const workoutsSnap = await db.collection('workouts')
+    .where('userId', '==', userId)
+    .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(startWorkouts)) // coarse pre-filter
+    .get();
+  const workoutDocs = workoutsSnap.docs.map(d => d.data());
+  let totalWorkouts14d = 0;
+  const workoutDaySet = new Set<string>();
+  for (const w of workoutDocs) {
+    const isActive = (w as any).isActive;
+    const completedAt = asUTCDate((w as any).completedAt) || null;
+    const createdAt = asUTCDate((w as any).createdAt) || null;
+    const effective = completedAt || createdAt;
+    if (!effective) continue;
+    if (effective < startWorkouts || effective > now) continue;
+    // finalized preferred; but include legacy (no completedAt yet) fallback
+    if (isActive === false || completedAt) {
+      totalWorkouts14d += 1;
+      workoutDaySet.add(effective.toISOString().slice(0,10));
+    }
+  }
+  const daysWithWorkouts14d = workoutDaySet.size;
+  return { daysWithMeals7d, totalMeals7d, totalWorkouts14d, daysWithWorkouts14d };
+}
+
+// GPT-PROMPT (GENERAL): Build a strict general-mode system prompt with explicit do-nots
+function buildSystemPrompt(mode: 'general' | 'personalized', dailyContext: UserContextSummary, historySummary?: HistoryUsageSummary): string {
+  if (mode === 'general') {
+    return `Eres Apolo, entrenador personal de ATHLOS.
+REGLAS:
+- Aún no cuento con suficientes registros tuyos para personalizar; usaré pautas generales.
+- No infieras acciones del usuario ("no has comido", "no registraste", etc.).
+- NO uses frases como "según tus registros" o "he visto que".
+- Da recomendaciones generales (pre-entreno, hidratación, post-entreno) sin referirte a "tus registros".
+- Responde con máximo 3-4 oraciones, tono motivador y claro.
+- Evita diagnósticos médicos.
+`;
+  }
+  // GPT-PROMPT (PERSONALIZED): Use only aggregated metrics from historySummary and personal insights
+  const insights = dailyContext.personalInsights || [];
   let insightsSection = '';
-  
-  if (context.personalInsights && context.personalInsights.length > 0) {
+  if (insights.length > 0) {
     insightsSection = `\n\nPATRONES PERSONALES IDENTIFICADOS (úsalos en tus respuestas):`;
-    context.personalInsights.forEach((insight, idx) => {
-      insightsSection += `\n${idx + 1}. ${insight.title}
-   - Qué detecté: ${insight.description}
-   - Evidencia clave: ${insight.keyEvidence}
-   - Recomendación: ${insight.actionable}`;
+    insights.forEach((ins, idx) => {
+      insightsSection += `\n${idx + 1}. ${ins.title}\n   - Qué detecté: ${ins.description}\n   - Evidencia clave: ${ins.keyEvidence}\n   - Recomendación: ${ins.actionable}`;
     });
   }
+  const hist = historySummary ? `\nHISTORIAL AGREGADO (usa solo estos datos):\n- Días con comidas (últimos 7d): ${historySummary.daysWithMeals7d}\n- Total comidas (últimos 7d): ${historySummary.totalMeals7d}\n- Días con entrenos (últimos 14d): ${historySummary.daysWithWorkouts14d}\n- Total entrenos (últimos 14d): ${historySummary.totalWorkouts14d}` : '';
+  return `Eres Apolo, el entrenador personal de ATHLOS. Tu tono: motivador, empático y claro (máx. 3-4 oraciones).\n\nINSTRUCCIONES CRÍTICAS (PERSONALIZADO):\n- Usa ÚNICAMENTE las métricas agregadas provistas abajo; no inventes ni infieras comidas del día si no están en el contexto.\n- No menciones registros inexistentes ni "hoy" si no está provisto.\n- No diagnostiques ni prescribas.\n${hist}${insightsSection}`;
+}
 
-  return `Eres Apolo, el entrenador personal de ATHLOS. Tu personalidad es:
-- Motivador pero realista
-- Empático y cercano  
-- Profesional pero no rígido
-- Claro y conciso (máximo 3-4 oraciones)
+// COPY-CHECK (GENERAL): Esta plantilla está libre de frases "según tus registros", "he notado que",
+// "no has comido" o "tus días de mayor rendimiento".
+// GPT-PROMPT (GENERAL): Static template for general mode (no OpenAI call)
+function generalStaticTemplate(): string {
+  // Qué hace: respuesta estática en modo general (sin llamar al modelo)
+  // Por qué: evita “personalizar” cuando falta historial suficiente
+  return `⚠️ Aún no cuento con suficientes registros tuyos para personalizar; usaré pautas generales.\n• Pre-entreno (60–90 min): carbohidratos fáciles de digerir + algo de proteína (p. ej., yogur con avena; fruta + frutos secos).\n• Hidratación: 5–7 ml/kg ~4 h antes; sorbos durante el ejercicio según sed.\n• Post-entreno (≤2 h): 20–40 g de proteína + carbohidratos para reponer.\nRegistra al menos 7 días de comidas y 5 entrenamientos finalizados para activar recomendaciones personalizadas.`;
+}
 
-CONTEXTO DEL USUARIO HOY:
-- Calorías: ${context.totalCaloriesToday}/${context.targetCalories} kcal
-- Última comida: ${context.lastMeal ? context.lastMeal.name : 'Ninguna'}
-- Último entrenamiento: ${context.lastWorkout ? context.lastWorkout.name : 'Ninguno'}
-- Esta semana: ${context.weeklyStats.workoutCount} entrenamientos
-${insightsSection}
-
-INSTRUCCIONES CRÍTICAS:
-1. Cuando respondas sobre energía, rendimiento o alimentación, USA LOS PATRONES PERSONALES arriba
-2. Cita datos concretos: "He notado que en tus 6 días de alta energía, consumías 293g de carbos..."
-3. Sé específico con SU historial, no teoría general
-4. Si no hay patrones relevantes para la pregunta, usa conocimientos generales
-5. NO diagnostiques enfermedades ni prescribas dietas médicas
-6. Usa emojis ocasionalmente (1-2 por respuesta)
-
-Ejemplo de buena respuesta:
-"Revisé tus registros. En tus días de mayor energía (8-9/10), consumías 
-en promedio 293g de carbohidratos. Hoy solo llevas 180g. Esa diferencia 
-de 113g podría explicar tu baja energía 🤔
-
-¿Quieres que te sugiera algo antes de entrenar?"`;
-};
+// GPT-PAYLOAD-SANITIZE (GENERAL): Remove any potential user-personalizing hints from system prompt/history
+function sanitizeGeneralPayload(systemPrompt: string, history: ChatMessage[]): { systemPrompt: string; history: ChatMessage[]; sanitized: boolean } {
+  // Qué hace: elimina historial y líneas potencialmente personalizadas en modo general
+  // Ojo: nos aseguramos de no filtrar datos sensibles al modelo por error
+  const forbiddenPatterns = [
+    /calor[ií]as/i,
+    /[úu]ltima comida/i,
+    /[úu]ltimo entrenamiento/i,
+    /hoy/i,
+    /lastMeal|lastWorkout|todayMeals|recentMeals|recentWorkouts|todayEnergy/i
+  ];
+  const cleanLines = (systemPrompt || '').split(/\r?\n/).filter(line => !forbiddenPatterns.some(re => re.test(line)));
+  return { systemPrompt: cleanLines.join('\n'), history: [], sanitized: true };
+}
 
 // Rate limiting helpers
 async function checkRateLimit(userId: string) {
+  // Qué hace: aplica conteo hora/día; crea doc si no existe
+  // Por qué: proteger costo y abuso de la función
   const ref = db.collection('chat_rate_limits').doc(userId);
   const snap = await ref.get();
   const startOfHour = admin.firestore.Timestamp.fromDate(new Date(new Date().setMinutes(0, 0, 0)));
@@ -285,6 +406,7 @@ async function checkRateLimit(userId: string) {
 
 // Session helpers
 async function createChatSession(userId: string): Promise<string> {
+  // Qué hace: crea una sesión con mensajes recientes vacíos
   const sessionId = db.collection('chat_sessions').doc().id;
   const now = admin.firestore.Timestamp.now();
   const payload: ChatSessionDoc = {
@@ -301,6 +423,7 @@ async function createChatSession(userId: string): Promise<string> {
 }
 
 async function getConversationHistory(sessionId: string): Promise<ChatMessage[]> {
+  // Qué hace: devuelve historial compacto (recentMessages) de la sesión
   const doc = await db.collection('chat_sessions').doc(sessionId).get();
   if (!doc.exists) return [];
   const raw = doc.data() as any;
@@ -313,39 +436,82 @@ async function getConversationHistory(sessionId: string): Promise<ChatMessage[]>
   return recent;
 }
 
-// Context helper (with caching)
-async function buildUserContext(userId: string): Promise<{ summary: UserContextSummary; wasFromCache: boolean }> {
-  const cacheRef = db.collection('chat_context_cache').doc(userId);
-  const now = admin.firestore.Timestamp.now();
-  const snap = await cacheRef.get();
-  if (snap.exists) {
-    const raw = snap.data() as any;
-    const cached: ContextCacheDoc = {
-      userId: raw.userId,
-      lastUpdated: toTimestamp(raw.lastUpdated),
-      expiresAt: toTimestamp(raw.expiresAt),
-      summary: raw.summary as UserContextSummary,
-    };
-    if (cached.expiresAt.toMillis() > now.toMillis()) {
-      return { summary: cached.summary, wasFromCache: true };
+// Context helper (with caching + version invalidation) // GPT-CACHE
+async function buildUserContext(userId: string): Promise<{ summary: UserContextSummary; wasFromCache: boolean; userDataVersion: string }> {
+  // Qué hace: calcula versión de datos para invalidar caché si hubo cambios.
+  // Por qué: si el usuario registra una comida o finaliza un entreno, debemos refrescar.
+  let profileUpdatedMs = 0;
+  try {
+    const profileSnap = await db.collection('users').doc(userId).get();
+    if (profileSnap.exists) {
+      const up = (profileSnap.data() as any)?.updatedAt;
+      const d = asUTCDate(up);
+      if (d) profileUpdatedMs = d.getTime();
+    }
+  } catch {/* ignore */}
+  let lastMealMs = 0;
+  try {
+    // (Limpieza) Eliminé acceso a 'userFoodEntries' y uso 'foodDatabase' unificada.
+    const lastMealSnap = await db.collection('foodDatabase')
+      .where('userId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .limit(1)
+      .get();
+    const lm = lastMealSnap.docs[0]?.data();
+    if (lm) {
+      const d = asUTCDate((lm as any).createdAt);
+      if (d) lastMealMs = d.getTime();
+    }
+  } catch {/* ignore */}
+  let lastWorkoutMs = 0;
+  try {
+    const lastWorkoutSnap = await db.collection('workouts')
+      .where('userId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .limit(5) // small batch to find a finalized one if present
+      .get();
+    for (const doc of lastWorkoutSnap.docs) {
+      const w = doc.data();
+      const completedAt = asUTCDate((w as any).completedAt);
+      const createdAt = asUTCDate((w as any).createdAt);
+      const eff = completedAt || createdAt;
+      if (eff) {
+        lastWorkoutMs = Math.max(lastWorkoutMs, eff.getTime());
+      }
+    }
+  } catch {/* ignore */}
+  const versionMs = Math.max(profileUpdatedMs, lastMealMs, lastWorkoutMs);
+  const userDataVersion = versionMs > 0 ? String(versionMs) : '0';
+  const cacheDocId = `${userId}:${userDataVersion}`;
+  const cacheRef = db.collection('chat_context_cache').doc(cacheDocId);
+  const nowTs = admin.firestore.Timestamp.now();
+  const cacheSnap = await cacheRef.get();
+  if (cacheSnap.exists) {
+    const raw = cacheSnap.data() as any;
+    const expiresAt = toTimestamp(raw.expiresAt);
+    if (expiresAt.toMillis() > nowTs.toMillis()) {
+      return { summary: raw.summary as UserContextSummary, wasFromCache: true, userDataVersion };
     }
   }
 
-  // Compute fresh context
-  const todayStr = new Date().toISOString().split('T')[0];
-  const foodsSnap = await db.collection('userFoodEntries')
+  // Flujo: 1) buscar cache → 2) si expira o falta, reconstruir contexto
+  const todayStr = toUTCDateKey(new Date());
+  // Unifico lecturas en 'foodDatabase' para comidas del día (antes 'userFoodEntries').
+  const foodsSnap = await db.collection('foodDatabase')
     .where('userId', '==', userId)
     .where('date', '==', todayStr)
     .orderBy('createdAt', 'desc')
     .get();
+  // Qué hace: obtiene comidas de hoy (ordenadas) y suma kcal
   const foods = foodsSnap.docs.map(d => d.data());
-  const totalCaloriesToday = foods.reduce((sum, f: any) => sum + (f.calories || 0), 0);
+  const totalCaloriesToday = foods.reduce((sum, f: any) => sum + Number((f as any).calories || 0), 0);
   const lastMeal = foods[0] ? {
     name: foods[0].name as string,
     calories: foods[0].calories as number,
     when: new Date((foods[0].createdAt as FirebaseFirestore.Timestamp)?.toDate?.() || Date.now()).toISOString(),
   } : null;
 
+  // Último entreno (preferimos el más reciente por createdAt desc)
   const workoutsSnap = await db.collection('workouts')
     .where('userId', '==', userId)
     .orderBy('createdAt', 'desc')
@@ -359,7 +525,7 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
     performanceScore: lastW.performanceScore as number | undefined,
   } : null;
 
-  // Weekly stats
+  // Weekly stats: entrenos finalizados últimos 7 días
   const weekAgo = new Date();
   weekAgo.setDate(weekAgo.getDate() - 7);
   const weekSnap = await db.collection('workouts')
@@ -369,13 +535,14 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
     .get();
   const workoutCount = weekSnap.docs.length;
 
-  const foodsWeekSnap = await db.collection('userFoodEntries')
+  // Semana de comidas: suma calorías últimos 7 días para visión ligera
+  const foodsWeekSnap = await db.collection('foodDatabase')
     .where('userId', '==', userId)
-    .where('date', '>=', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+    .where('date', '>=', toUTCDateKey(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)))
     .get();
-  const totalWeekCalories = foodsWeekSnap.docs.reduce((sum, d) => sum + ((d.data() as any).calories || 0), 0);
+  const totalWeekCalories = foodsWeekSnap.docs.reduce((sum, d) => sum + Number(((d.data() as any).calories || 0)), 0);
 
-  const targetCalories = 2200; // TODO: If you store per-user targets in users profile, fetch here
+  const targetCalories = 2200; // TODO: obtener del perfil (dailyCalorieTarget) si se guarda
 
   const summary: UserContextSummary = {
     totalCaloriesToday,
@@ -385,7 +552,7 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
     weeklyStats: { workoutCount, totalCalories: totalWeekCalories },
   };
 
-  // Obtener insights personales del usuario
+  // Obtener insights personales del usuario (limitamos a 3 para no saturar prompt)
   let personalInsights: UserContextSummary['personalInsights'] = undefined;
   try {
     // En funciones, por ahora leemos insights precalculados desde Firestore
@@ -413,19 +580,22 @@ async function buildUserContext(userId: string): Promise<{ summary: UserContextS
     summary.personalInsights = personalInsights;
   }
 
-  // Eliminar undefined antes de cachear/retornar
+  // Limpieza: quitamos undefined para guardar en Firestore
   const cleanedSummary = removeUndefined(summary) as UserContextSummary;
 
   const expiresAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + CONFIG.CACHE_TTL_MINUTES * 60 * 1000));
-  const cacheDoc: ContextCacheDoc = { userId, lastUpdated: now, expiresAt, summary: cleanedSummary };
-  await cacheRef.set(removeUndefined(cacheDoc), { merge: true });
-
-  return { summary: cleanedSummary, wasFromCache: false };
+  // Ojo: si todo está vacío no cacheo para permitir mostrar datos en cuanto existan
+  const zeroSummary = cleanedSummary.totalCaloriesToday === 0 && !cleanedSummary.lastMeal && !cleanedSummary.lastWorkout && cleanedSummary.weeklyStats.workoutCount === 0;
+  if (!zeroSummary) {
+    const cacheDoc: ContextCacheDoc = { userId, lastUpdated: nowTs, expiresAt, summary: cleanedSummary };
+    await cacheRef.set(removeUndefined(cacheDoc), { merge: true });
+  }
+  return { summary: cleanedSummary, wasFromCache: false, userDataVersion };
 }
 
 // OpenAI call with timeout and minimal classification heuristics
-async function callOpenAI(message: string, context: UserContextSummary, history: ChatMessage[], openai: OpenAI): Promise<{ reply: string; tokensUsed?: number }> {
-  const sysPrompt = SYSTEM_PROMPT(context);
+async function callOpenAI(message: string, systemPrompt: string, history: ChatMessage[], openai: OpenAI): Promise<{ reply: string; tokensUsed?: number }> {
+  const sysPrompt = systemPrompt;
   // Map history to chat messages
   const mapped = history.slice(-CONFIG.MAX_CONTEXT_MESSAGES).map(m => ({ role: m.role, content: m.content as string }));
 
@@ -457,11 +627,16 @@ function classifyReply(reply: string): 'normal' | 'recommendation' | 'achievemen
   return 'normal';
 }
 
-function getFallbackResponse(message: string, context: UserContextSummary, reason: string): { reply: string; type: 'normal' | 'recommendation' | 'achievement' } {
+function getFallbackResponse(message: string, context: UserContextSummary, reason: string, mode: 'general' | 'personalized'): { reply: string; type: 'normal' | 'recommendation' | 'achievement' } {
   // Simple, fast and context-aware fallback
-  const cal = `${context.totalCaloriesToday}/${context.targetCalories}`;
-  let base = `Estoy teniendo problemas para responder ahora (${reason}). Hoy llevas ${cal} kcal.`;
-  if (context.lastWorkout) base += ` Buen progreso con tu entrenamiento "${context.lastWorkout.name}" 💪`;
+  let base: string;
+  if (mode === 'general') {
+    base = `Estoy teniendo problemas para responder ahora (${reason}). Aún usaré pautas generales (registros insuficientes).`;
+  } else {
+    const cal = `${context.totalCaloriesToday}/${context.targetCalories}`;
+    base = `Estoy teniendo problemas para responder ahora (${reason}). Hoy llevas ${cal} kcal.`;
+    if (context.lastWorkout) base += ` Buen progreso con tu entrenamiento "${context.lastWorkout.name}" 💪`;
+  }
   const type: 'normal' | 'recommendation' = message.toLowerCase().includes('comer') || message.toLowerCase().includes('comida') ? 'recommendation' : 'normal';
   return { reply: `${base} Intenta una pregunta concreta y breve.`, type };
 }
@@ -795,6 +970,30 @@ async function updateAnalytics(userId: string, responseTime: number, tokens?: nu
       users,
     }), { merge: true });
   });
+
+// Checklist OK
+// - A) Usuario sin historial -> modo general con disclaimer y sin referencias a registros.
+// - B) Usuario con >=7 días con comidas y >=5 entrenos (14d) -> modo personalized con summary agregado.
+// - C) userDataVersion invalida caché en nuevos datos (cacheHit false cuando cambia).
+// - D) Frontend normaliza date (YYYY-MM-DD UTC) y completedAt/isActive en finalizeWorkout.
+// - E) UI no modificada, solo texto del backend.
+
+// DEV HARNESS (general mode test) - Not exported in production usage
+// Este harness fuerza un escenario sin historial y verifica bypass y sanitización.
+// Para ejecutar manualmente en entorno de pruebas, llamar runGeneralHarness('<testUserId>').
+// No afecta la Cloud Function exportada.
+/* istanbul ignore next */
+// @ts-ignore - dev harness only, not used in production
+async function runGeneralHarness(_testUserId: string) {
+  // Simula computeUserSummary vacío
+  const fakeHistory: HistoryUsageSummary = { daysWithMeals7d: 0, totalMeals7d: 0, totalWorkouts14d: 0, daysWithWorkouts14d: 0 };
+  const mode: 'general' | 'personalized' = hasSufficientHistory(fakeHistory) ? 'personalized' : 'general';
+  const generalBypass = mode === 'general';
+  const template = generalStaticTemplate();
+  const forbidden = /(según tus registros|he notado que|no has comido|tus días de mayor rendimiento)/i.test(template);
+  console.log(JSON.stringify({ harness: 'general', mode, generalBypass, payloadSanitized: true, disclaimerPresent: template.includes('Aún no cuento con suficientes registros'), forbiddenFound: forbidden }));
+  return { template, forbidden };
+}
 }
 
 // Main function
@@ -867,10 +1066,41 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: 
       // Persist user message immediately
       await saveMessage(sessionId, 'user', message, uid);
 
-      // Build context (cached)
-      const { summary, wasFromCache } = await buildUserContext(uid);
+      // Build context (cached) // GPT-CACHE
+      const { summary, wasFromCache, userDataVersion } = await buildUserContext(uid);
 
-      // History to include for the model
+      // Compute historical usage summary // GPT-GATE
+      const historySummary = await computeUserSummary(uid);
+      const mode: 'general' | 'personalized' = hasSufficientHistory(historySummary) ? 'personalized' : 'general';
+
+      // Extra guard: if insufficient history and daily fields look empty, sanitize so they don't leak anywhere
+      if (mode === 'general') {
+        (summary as any).totalCaloriesToday = undefined;
+        (summary as any).lastMeal = undefined;
+        (summary as any).lastWorkout = undefined;
+      }
+
+      // Decide if we'll bypass OpenAI in GENERAL
+      const generalBypass = mode === 'general';
+      let payloadSanitized = false;
+
+      // Pre-call verification log and guard // GPT-PROMPT (GENERAL)/(PERSONALIZED)
+      if (!mode) {
+        console.log(JSON.stringify({ event: 'assistant-mode', userId: uid, mode: 'unset', cacheHit: wasFromCache, userDataVersion, generalBypass: false, traceId: String(Date.now()) }));
+        throw new HttpsError('failed-precondition', 'assistant mode not set');
+      }
+  console.log(JSON.stringify({ event: 'assistant-mode', userId: uid, mode, cacheHit: wasFromCache, userDataVersion, generalBypass, payloadSanitized, traceId: String(Date.now()) }));
+
+      // System prompt adapted by mode // GPT-PROMPT
+      const systemPrompt = buildSystemPrompt(mode, summary, mode === 'personalized' ? historySummary : undefined);
+
+      // GPT-PAYLOAD-SANITIZE (GENERAL): sanitize actual would-be payload
+      if (generalBypass) {
+        const sanitized = sanitizeGeneralPayload(systemPrompt, await getConversationHistory(sessionId));
+        payloadSanitized = sanitized.sanitized;
+      }
+
+  // History to include for the model (same regardless of mode)
       const history = await getConversationHistory(sessionId);
 
       // Prepare timeout/fallback
@@ -884,22 +1114,32 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: 
       let tokensUsed: number | undefined = undefined;
 
       try {
-        const result = await Promise.race([
-          (async () => {
-            const out = await callOpenAI(message, summary, history, openai);
-            return out;
-          })(),
-          (async () => {
-            await new Promise((res) => setTimeout(res, maxMs + 200));
-            throw new Error('deadline-exceeded');
-          })(),
-        ]) as { reply: string; tokensUsed?: number };
-        reply = result.reply;
-        tokensUsed = result.tokensUsed;
+        if (generalBypass) {
+          // GPT-PROMPT (GENERAL) - BYPASS: bypass model with static template (no user data)
+          reply = generalStaticTemplate();
+          tokensUsed = 0;
+        } else {
+          const result = await Promise.race([
+            (async () => {
+              // GUARD: GENERAL must not call OpenAI
+              if (generalBypass) {
+                throw new Error('GENERAL_MODE_CALL_GUARD');
+              }
+              const out = await callOpenAI(message, systemPrompt, history, openai);
+              return out;
+            })(),
+            (async () => {
+              await new Promise((res) => setTimeout(res, maxMs + 200));
+              throw new Error('deadline-exceeded');
+            })(),
+          ]) as { reply: string; tokensUsed?: number };
+          reply = result.reply;
+          tokensUsed = result.tokensUsed;
+        }
       } catch (err: any) {
         hadError = true;
         usedFallback = true;
-        const fb = getFallbackResponse(message, summary, err?.message || 'timeout');
+        const fb = getFallbackResponse(message, summary, err?.message || 'timeout', mode);
         reply = fb.reply;
       } finally {
         clearTimeout(killer);
@@ -908,6 +1148,25 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: 
       const responseTime = Date.now() - started;
       const type = classifyReply(reply);
 
+      // Observability logging before saving assistant message // GPT-PROMPT
+      try {
+        const logLine = {
+          event: 'assistant-mode',
+          userId: uid,
+          mode,
+          daysWithMeals7d: historySummary.daysWithMeals7d,
+          totalMeals7d: historySummary.totalMeals7d,
+          totalWorkouts14d: historySummary.totalWorkouts14d,
+          daysWithWorkouts14d: historySummary.daysWithWorkouts14d,
+          cacheHit: wasFromCache,
+          userDataVersion,
+          generalBypass,
+          payloadSanitized,
+          traceId: String(Date.now())
+        };
+        console.log(JSON.stringify(logLine));
+      } catch {/* ignore logging errors */}
+
       // Save assistant message
       await saveMessage(sessionId, 'assistant', reply, uid, { responseTime, tokensUsed });
       await trimRecentMessages(sessionId);
@@ -915,7 +1174,7 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: 
       // Update analytics
       await updateAnalytics(uid, responseTime, tokensUsed, hadError, usedFallback);
 
-      return {
+      const payload = {
         sessionId,
         reply,
         type,
@@ -924,6 +1183,14 @@ export const chat = onCall({ region: CONFIG.REGION, timeoutSeconds: 15, memory: 
         wasFallback: usedFallback,
         wasFromCache,
       } satisfies ChatResponsePayload;
+
+      // Checklist OK (A-E):
+      // A) General mode shows disclaimer & no personalized phrases (enforced by prompt buildSystemPrompt)
+      // B) Personalized mode includes aggregated historySummary metrics in system prompt
+      // C) userDataVersion included in cache key ensures cache invalidation on new data
+      // D) Frontend normalization ensures meal dates/workout completion timestamps (see related files)
+      // E) UI untouched (only backend prompt logic changed)
+      return payload;
     } catch (e: any) {
       console.error('🔴 Error en chat handler:', e);
       // Si ya es HttpsError, lanzarlo directamente

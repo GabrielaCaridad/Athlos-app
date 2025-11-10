@@ -1,8 +1,8 @@
-// En este archivo concentro los servicios relacionados con alimentos.
-// - foodDatabaseService: gestiona la "base de datos" de alimentos que usa la app
-//   (agregar alimentos nuevos, buscarlos y llevar un contador de uso).
-// - userFoodService: maneja los registros de alimentos consumidos por cada usuario
-//   (crear, listar por fecha/mealType y estadísticas en rangos de fechas).
+// Servicio de alimentos (Firestore)
+// Propósito: manejar catálogo de alimentos y registros del usuario.
+// Colecciones: 'foodDatabase' (catálogo + registros de consumo unificados).
+// Formato de fecha: YYYY-MM-DD en UTC (clave para consultas por día).
+// Índices: userId+date(+createdAt desc) y rangos por date para estadísticas.
 import { 
   collection, 
   addDoc, 
@@ -24,6 +24,10 @@ import {
 } from 'firebase/firestore';
 import { db } from './config';
 
+// Utilidades
+// Qué hace: quita undefined/null antes de escribir en Firestore.
+// Por qué: Firestore no acepta undefined y evita errores tontos.
+
 // Pequeña utilidad: limpio las propiedades undefined/null antes de enviar a Firestore.
 // Firestore no admite campos undefined, así que los omito para evitar errores.
 function removeUndefinedFields<T extends Record<string, unknown>>(obj: T): Partial<T> {
@@ -37,7 +41,8 @@ function removeUndefinedFields<T extends Record<string, unknown>>(obj: T): Parti
   return cleaned;
 }
 
-// Estructura de un alimento en la colección "foodDatabase" de Firestore.
+// Tipos (se conservan nombres públicos para no romper la UI)
+// Estructura de un alimento en la colección 'foodDatabase'.
 export interface DatabaseFood {
   id?: string;
   name: string;
@@ -59,7 +64,7 @@ export interface DatabaseFood {
   alternativeNames?: string[];
 }
 
-// Estructura de un registro de consumo en la colección "userFoodEntries".
+// Estructura de un registro de consumo en la colección unificada 'foodDatabase'.
 export interface UserFoodEntry {
   id?: string;
   userId: string;
@@ -121,7 +126,7 @@ export const foodDatabaseService = {
     try {
       const trimmed = searchTerm.trim();
       if (!trimmed) {
-        // Lista por defecto: más usados recientes, limitado en el servidor
+        // Qué hace: si no hay término, trae top por uso + recientes
         const q = query(
           collection(db, 'foodDatabase'),
           orderBy('usageCount', 'desc'),
@@ -139,9 +144,8 @@ export const foodDatabaseService = {
         }).slice(0, limit);
       }
 
-      // Búsqueda por prefijo en el servidor usando orderBy(name) + startAt/endAt
-      // Nota: esto es sensible a mayúsculas/minúsculas; si quiero case-insensitive real,
-      // conviene mantener un campo 'nameLower' indexado.
+      // Qué hace: búsqueda por prefijo en name e intento por alternativeNames
+      // Ojo: sensible a mayúsculas; para case-insensitive real haría falta nameLower.
       const qByName = query(
         collection(db, 'foodDatabase'),
         orderBy('name'),
@@ -196,7 +200,7 @@ export const foodDatabaseService = {
         }
       }
 
-      // Orden de preferencia: verificados/USDA primero, luego por uso
+      // Orden final: USDA/verificados primero, luego por uso
       results.sort((a, b) => {
         const aVerified = (a.isVerified || a.source === 'USDA') ? 1 : 0;
         const bVerified = (b.isVerified || b.source === 'USDA') ? 1 : 0;
@@ -219,7 +223,7 @@ export const foodDatabaseService = {
    */
   async addToDatabase(foodData: CreateFoodData & { fdcId?: number; source?: DatabaseFood['source'] }, userId: string): Promise<string> {
     try {
-      // Evitar duplicados por fdcId si viene de USDA
+      // Qué hace: evita duplicados USDA por fdcId, incrementa uso si existe
       if (foodData.fdcId) {
         const qFdc = query(collection(db, 'foodDatabase'), where('fdcId', '==', foodData.fdcId));
         const qFdcSnap = await getDocs(qFdc);
@@ -274,7 +278,7 @@ export const foodDatabaseService = {
    */
   async incrementUsage(foodId: string): Promise<void> {
     try {
-      const foodRef = doc(db, 'foodDatabase', foodId);
+      const foodRef = doc(db, 'foodDatabase', foodId); // Índice no requerido (lookup directo)
       await updateDoc(foodRef, {
         usageCount: increment(1),
         updatedAt: Timestamp.now()
@@ -308,10 +312,10 @@ export const foodDatabaseService = {
   },
 };
 
-// Servicio para manejar los registros de consumo por usuario (colección: userFoodEntries)
+// Servicio para manejar los registros de consumo por usuario (colección unificada: foodDatabase)
 export const userFoodService = {
   /**
-  * Registrar un consumo: creo un documento en userFoodEntries.
+  * Registrar un consumo: ahora todo vive en 'foodDatabase' para simplificar el backend/chat.
   * Guardo los macros multiplicados por la cantidad para facilitar resúmenes.
    */
   async addUserFoodEntry(
@@ -322,6 +326,16 @@ export const userFoodService = {
     mealType?: UserFoodEntry['mealType']
   ): Promise<string> {
     try {
+      // Qué hace: normaliza fecha → clave YYYY-MM-DD UTC
+      const normalizeDateUtc = (raw?: string): string => {
+        if (raw) {
+          const d = new Date(raw);
+          if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+        }
+        return new Date().toISOString().slice(0,10);
+      };
+      const ymdUtc = normalizeDateUtc(date);
+
       const databaseFoodId = await foodDatabaseService.addToDatabase(foodData, userId);
 
       const rawEntry = {
@@ -331,7 +345,8 @@ export const userFoodService = {
         calories: foodData.calories * quantity,
   serving: foodData.serving,
         quantity,
-        date,
+  // Normalización para backend (chat) - siempre YYYY-MM-DD UTC
+  date: ymdUtc,
         mealType,
         protein: typeof foodData.protein === 'number' ? foodData.protein * quantity : undefined,
         carbs: typeof foodData.carbs === 'number' ? foodData.carbs * quantity : undefined,
@@ -341,8 +356,13 @@ export const userFoodService = {
       } as Partial<UserFoodEntry> & { userId: string; databaseFoodId: string; name: string; calories: number; serving: string; quantity: number; date: string; createdAt: Timestamp };
 
       const cleanEntry = removeUndefinedFields(rawEntry);
+      // Log diagnóstico (solo dev) para verificar escritura diaria en foodDatabase
+      if (typeof console !== 'undefined') {
+        console.log('[addFood] wrote', { userId, date: ymdUtc, createdAt: rawEntry.createdAt });
+      }
 
-      const docRef = await addDoc(collection(db, 'userFoodEntries'), cleanEntry);
+  // (Limpieza) Reemplacé 'userFoodEntries' por 'foodDatabase'.
+  const docRef = await addDoc(collection(db, 'foodDatabase'), cleanEntry);
       return docRef.id;
     } catch (error) {
       console.error('Error adding user food entry:', error);
@@ -366,7 +386,8 @@ export const userFoodService = {
       snack: { calories: number; protein: number; carbs: number; fats: number };
     };
   }> {
-    const foods = await this.getUserFoodsByDate(userId, date);
+  // Unifico lecturas en 'foodDatabase'.
+  const foods = await this.getUserFoodsByDate(userId, date);
     const summary = {
       totalCalories: 0,
       totalProtein: 0,
@@ -405,7 +426,7 @@ export const userFoodService = {
   async getUserFoodsByDate(userId: string, date: string): Promise<UserFoodEntry[]> {
     try {
       const q = query(
-        collection(db, 'userFoodEntries'),
+  collection(db, 'foodDatabase'),
         where('userId', '==', userId),
         where('date', '==', date),
         orderBy('createdAt', 'desc')
@@ -417,8 +438,9 @@ export const userFoodService = {
       const code = (error as { code?: string })?.code || '';
       console.error('Error getting user foods by date:', error);
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Ojo: fallback cliente si falta índice compuesto userId+date+createdAt
         console.warn('getUserFoodsByDate: composite index required, falling back to client-side filter');
-        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+  const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
         return all.filter(f => f.date === date).sort((a, b) => {
@@ -442,7 +464,7 @@ export const userFoodService = {
   ): Promise<UserFoodEntry[]> {
     try {
       const q = query(
-        collection(db, 'userFoodEntries'),
+  collection(db, 'foodDatabase'),
         where('userId', '==', userId),
         where('date', '==', date),
         where('mealType', '==', mealType),
@@ -455,8 +477,9 @@ export const userFoodService = {
       const code = (error as { code?: string })?.code || '';
       console.error('Error getting user foods by meal type:', error);
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Ojo: fallback cliente si falta índice userId+date+mealType+createdAt
         console.warn('getUserFoodsByMealType: composite index required, falling back to client-side filter');
-        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+  const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
         return all.filter(f => f.date === date && f.mealType === mealType).sort((a, b) => {
@@ -474,7 +497,7 @@ export const userFoodService = {
    */
   async updateUserFoodEntry(entryId: string, updates: Partial<UserFoodEntry>): Promise<void> {
     try {
-      const entryRef = doc(db, 'userFoodEntries', entryId);
+  const entryRef = doc(db, 'foodDatabase', entryId); // (Limpieza) antes userFoodEntries
       await updateDoc(entryRef, updates);
     } catch (error) {
       console.error('Error updating user food entry:', error);
@@ -487,7 +510,7 @@ export const userFoodService = {
    */
   async deleteUserFoodEntry(entryId: string): Promise<void> {
     try {
-      const entryRef = doc(db, 'userFoodEntries', entryId);
+  const entryRef = doc(db, 'foodDatabase', entryId); // (Limpieza) antes userFoodEntries
       await deleteDoc(entryRef);
     } catch (error) {
       console.error('Error deleting user food entry:', error);
@@ -500,8 +523,8 @@ export const userFoodService = {
    */
   async getDailyCalories(userId: string, date: string): Promise<number> {
     try {
-      const foods = await this.getUserFoodsByDate(userId, date);
-      return foods.reduce((total, food) => total + food.calories, 0);
+  const foods = await this.getUserFoodsByDate(userId, date); // unificado
+  return foods.reduce((total, food) => total + Number(food.calories || 0), 0); // Normalizo a number
     } catch (error) {
       console.error('Error getting daily calories:', error);
       throw error;
@@ -519,7 +542,7 @@ export const userFoodService = {
   }> {
     try {
       const q = query(
-        collection(db, 'userFoodEntries'),
+  collection(db, 'foodDatabase'),
         where('userId', '==', userId),
         where('date', '>=', startDate),
         where('date', '<=', endDate),
@@ -555,8 +578,9 @@ export const userFoodService = {
       const code = (error as { code?: string })?.code || '';
       console.error('Error getting nutrition stats:', error);
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
+        // Ojo: fallback si falta índice userId+date DESC para rango
         console.warn('getNutritionStats: composite index required, falling back to client-side filter');
-        const q2 = query(collection(db, 'userFoodEntries'), where('userId', '==', userId));
+  const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => d.data()) as UserFoodEntry[];
         const entries = all.filter(e => e.date >= startDate && e.date <= endDate).sort((a, b) => (b.date > a.date ? 1 : -1));

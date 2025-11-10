@@ -13,13 +13,16 @@ import App from './App.tsx';
 import { AuthProvider } from './2-logica-negocio/hooks/AuthProvider';
 import './index.css';
 import './3-acceso-datos/firebase/config';
+import { ToastProvider } from './1-presentacion/componentes/comun/ToastProvider';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AuthProvider>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AuthProvider>
+    </ToastProvider>
   </StrictMode>
 );

@@ -1,15 +1,10 @@
 /**
  * Página de Configuración
- *
- * Qué permite
- * - Editar datos del perfil (nombre, fecha de nacimiento, género, peso/altura).
- * - Definir objetivos, nivel de actividad y peso objetivo (según meta).
- * - Ver métricas calculadas (IMC, calorías objetivo y macros) cuando hay datos suficientes.
- *
- * Flujo de datos
- * - Lee/escribe perfil en Firestore vía userService; maneja perfiles inexistentes creando uno básico.
- * - Al guardar, si hay peso válido, intenta auto-registrarlo.
- * - Si el perfil está completo, inicializa personalización (calorías y macros) y recalcula métricas para mostrar.
+ * Qué hace: edición de perfil, definición de objetivos y cálculo de métricas derivadas (IMC, calorías, macros).
+ * Flujo:
+ *  - Carga perfil (crea uno básico si no existe) y calcula métricas si hay datos completos.
+ *  - Guardar: persiste perfil, intenta auto-registro de peso y recalcula personalización.
+ * Ojo: si faltan datos, muestra aviso y no calcula métricas; mantiene UI estable con perfil mínimo en memoria.
  */
 import { useState, useEffect } from 'react';
 import { Timestamp } from 'firebase/firestore';
@@ -34,7 +29,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
     macros?: { protein: number; carbs: number; fats: number };
   } | null>(null);
   
-  // Cargar datos del usuario (maneja perfiles antiguos y nuevos)
+  // Carga inicial: obtiene perfil; crea uno básico si no existe para evitar pantalla vacía.
   useEffect(() => {
     if (!user?.uid) return;
 
@@ -46,7 +41,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
         const userProfile = await userService.getUserProfile(user.uid);
 
         if (userProfile) {
-          // ✅ Perfil existe, usarlo
+          // Perfil encontrado: usarlo y calcular métricas si completo.
           console.log('✅ Perfil encontrado:', userProfile);
           const __p: Record<string, unknown> = userProfile as unknown as Record<string, unknown>;
           console.log('🎯 [Config] Calorías objetivo del perfil:', __p['dailyCalorieTarget']);
@@ -59,7 +54,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
           });
           setProfile(userProfile);
 
-          // Solo calcular métricas si tiene TODOS los datos necesarios
+          // Cálculo: solo si todos los campos clave están presentes.
           const { currentWeight, height, dateOfBirth, gender, activityLevel, primaryGoal } = userProfile;
           if (currentWeight && height && dateOfBirth && gender && activityLevel && primaryGoal) {
             try {
@@ -94,14 +89,12 @@ export default function ConfiguracionPage({ isDark }: Props) {
             console.log('ℹ️ Perfil encontrado pero faltan datos para calcular métricas');
           }
         } else {
-          // ⚠️ Perfil no existe, crear uno básico
+          // Perfil no existe: crear perfil mínimo en Firestore (displayName/email/goals).
           console.log('⚠️ Perfil no encontrado, creando perfil básico...');
-          const basicProfileData: Omit<UserProfile, 'id' | 'userId' | 'createdAt'> = {
+          const basicProfileData: Pick<UserProfile, 'displayName' | 'email' | 'goals'> = {
             displayName: user.displayName || 'Usuario',
             email: user.email || '',
-            goals: [],
-            level: 1,
-            xp: 0
+            goals: []
           };
           try {
             await userService.createUserProfile(user.uid, basicProfileData);
@@ -124,7 +117,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
         }
       } catch (error) {
         console.error('❌ Error en loadProfile:', error);
-        // Fallback: crear perfil básico en memoria aunque falle la carga
+  // Fallback global: si falla Firestore, generar perfil mínimo en memoria para no romper la vista.
         setProfile({
           userId: user.uid,
           displayName: user.displayName || 'Usuario',
@@ -143,7 +136,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid]);
   
-  // Guardar cambios
+  // Guardar cambios: persiste perfil, opcional auto-registro de peso y recalcula calorías/macros si completo.
   const handleSave = async () => {
     if (!user?.uid || !profile) return;
     
@@ -151,10 +144,10 @@ export default function ConfiguracionPage({ isDark }: Props) {
       setSaving(true);
       setSuccessMessage('');
       
-      // Guardar cambios básicos en Firestore
+  // Persistencia principal del perfil
       await userService.updateUserProfile(user.uid, profile);
 
-      // Auto-registro de peso si viene definido
+  // Auto-registro: si el peso es razonable se guarda como entrada para historial.
       if (typeof profile.currentWeight === 'number' && profile.currentWeight >= 30 && profile.currentWeight <= 300) {
         try {
           await autoRegistroDesdeConfiguracion(user.uid, profile.currentWeight);
@@ -163,7 +156,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
         }
       }
 
-      // Actualizar inmediatamente el nombre en Firebase Auth + contexto para reflejarse en toda la app
+  // Sincroniza displayName en Auth para reflejarlo fuera del perfil.
       if (profile.displayName && profile.displayName !== (user.displayName || '')) {
         try {
           if (updateUserDisplayName) {
@@ -176,7 +169,7 @@ export default function ConfiguracionPage({ isDark }: Props) {
         }
       }
       
-      // Si tiene todos los datos, calcular métricas nutricionales
+  // Recalcular métricas nutricionales si perfil completo.
       const { currentWeight, height, dateOfBirth, gender, activityLevel, primaryGoal } = profile;
       
       if (currentWeight && height && dateOfBirth && gender && activityLevel && primaryGoal) {

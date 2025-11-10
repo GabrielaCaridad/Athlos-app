@@ -1,26 +1,21 @@
 /**
- * Formulario de Autenticación (login/registro)
- *
- * Flujo
- * - Login: `signInWithEmailAndPassword` con validaciones básicas.
- * - Registro: crea usuario en Auth, actualiza displayName y genera documento `users/{uid}` en Firestore.
- * - Al finalizar, llama `onAuthSuccess()` para que el contenedor reaccione (navegación/state arriba).
- *
- * Validaciones
- * - Email con regex sencillo.
- * - Password mínimo 6 caracteres.
- * - En registro: nombre requerido y confirmación de password.
- *
- * Notas
- * - Mensajes de error se derivan de `error.code` de Firebase cuando es posible.
- * - No persiste preferencias de tema: `isDark` solo decide el estilo visual de este form.
+ * Formulario de Autenticación (login / registro)
+ * Qué hace: permite iniciar sesión o crear cuenta y crea perfil básico en Firestore.
+ * Flujo:
+ *  - Login: signInWithEmailAndPassword → onAuthSuccess para navegar.
+ *  - Registro: crea usuario, actualiza displayName y crea documento users/{uid} mínimo.
+ * Validaciones: email formato simple, password >=6, nombre requerido en registro, confirmación igual.
+ * Ojo: errores se traducen vía authErrorToMessage; no se modifica tema global (isDark solo estilos locales).
  */
 // AuthForm: login y registro con Firebase Auth.
 import React, { useState } from 'react';
 import { Eye, EyeOff, Mail, Lock, User, Dumbbell, ArrowRight, Loader } from 'lucide-react';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '../../../3-acceso-datos/firebase/config';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from 'firebase/auth';
+import { Timestamp } from 'firebase/firestore';
+import { auth } from '../../../3-acceso-datos/firebase/config';
+import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
+import { useToast } from '../../componentes/comun/ToastProvider';
+import { authErrorToMessage } from '../../../utils/authErrorToMessage';
 
 interface AuthFormProps {
   isDark: boolean;
@@ -31,6 +26,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const toast = useToast();
   
   // Estado que contiene todos los datos del formulario
   const [formData, setFormData] = useState({
@@ -43,6 +39,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
   const validateForm = () => {
+    // Qué hace: construye objeto de errores por campo; devuelve true si no hay.
     const newErrors: { [key: string]: string } = {};
 
     // Validación del email
@@ -74,6 +71,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
+    // Qué hace: procesa login o registro; en registro crea perfil y feedback toast.
     e.preventDefault();
     if (!validateForm()) return;
 
@@ -82,65 +80,76 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
 
     try {
       if (isLogin) {
-        await signInWithEmailAndPassword(auth, formData.email, formData.password);
+  await signInWithEmailAndPassword(auth, formData.email, formData.password);
+  // Feedback de éxito opcional: se puede mostrar toast si se requiere visibilidad
+        onAuthSuccess();
       } else {
         // Crear usuario en Auth
-        const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
+  const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password); // Alta en Auth
 
         // Actualizar displayName en Auth
-        await updateProfile(userCredential.user, {
-          displayName: formData.name
-        });
+  await updateProfile(userCredential.user, { displayName: formData.name }); // Persisto nombre visible
 
-        // Crear documento en Firestore con UID como ID
+        // Crear documento de perfil usando el servicio (solo campos requeridos)
         try {
-          console.log('📝 Creando documento de usuario en Firestore...');
-          await setDoc(doc(db, 'users', userCredential.user.uid), {
-            email: formData.email,
+          console.log('📝 Creando perfil de usuario en Firestore a las:', Timestamp.now().toMillis());
+
+          await userService.createUserProfile(userCredential.user.uid, { // Documento perfil mínimo
             displayName: formData.name,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            // Valores por defecto mínimos
-            currentWeight: null,
-            height: null,
-            dateOfBirth: null,
-            gender: 'prefer_not_to_say',
-            primaryGoal: 'maintenance',
-            activityLevel: 'moderate',
-            level: 1,
-            xp: 0,
-            achievements: [],
+            email: formData.email,
             goals: []
           });
-          console.log('✅ Documento de usuario creado en:', `users/${userCredential.user.uid}`);
+
+          // Mensaje global y limpieza del formulario
+          toast.success('Usuario creado con éxito');
+          setErrors({});
+          setFormData({ name: '', email: '', password: '', confirmPassword: '' });
+
+          onAuthSuccess();
         } catch (e) {
-          console.error('❌ Error creando documento de usuario en Firestore:', e);
+          console.error('❌ Error al crear perfil de usuario en Firestore:', e);
+          toast.error('Error al crear el usuario');
+          setErrors(prev => ({ ...prev, general: '❌ Error al crear perfil de usuario en Firestore.' }));
         }
       }
-      onAuthSuccess();
     } catch (error: unknown) {
-      let errorMessage = 'Error de autenticación';
-
-      if (error && typeof error === 'object' && 'code' in error) {
-        const firebaseError = error as { code: string };
-        errorMessage = firebaseError.code === 'auth/user-not-found' 
-          ? 'Usuario no encontrado'
-          : firebaseError.code === 'auth/wrong-password'
-          ? 'Contraseña incorrecta'
-          : firebaseError.code === 'auth/email-already-in-use'
-          ? 'Este email ya está registrado'
-          : firebaseError.code === 'auth/weak-password'
-          ? 'La contraseña es muy débil'
-          : 'Error de autenticación';
-      }
-      
-      setErrors({ general: errorMessage });
+  const code = (error as { code?: string })?.code;
+  const msg = authErrorToMessage(code);
+  // Muestro toast de error y reflejo en el formulario
+      toast.error(msg);
+      setErrors({ general: msg });
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Envío de correo para restablecer contraseña
+  const handlePasswordReset = async () => {
+    // Qué hace: envía correo de reset si email es válido y modo login.
+    // Solo disponible en modo login
+    if (!isLogin) return;
+    const email = (formData.email || '').trim();
+    if (!email) {
+      setErrors(prev => ({ ...prev, email: 'Ingresa tu email para recuperar la contraseña' }));
+      return;
+    }
+    if (!/\S+@\S+\.\S+/.test(email)) {
+      setErrors(prev => ({ ...prev, email: 'Email inválido' }));
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      toast.success('Te enviamos un correo para restablecer tu contraseña.');
+    } catch (error: unknown) {
+      const code = (error as { code?: string })?.code;
+      const msg = authErrorToMessage(code);
+      toast.error(msg);
+      setErrors(prev => ({ ...prev, general: msg }));
+    }
+  };
+
   const handleInputChange = (field: string, value: string) => {
+    // Actualiza el campo y limpia error específico si existía.
     setFormData(prev => ({ ...prev, [field]: value }));
     if (errors[field]) {
       setErrors(prev => ({ ...prev, [field]: '' }));
@@ -246,6 +255,17 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
             </div>
             {errors.password && (
               <p className="text-red-400 text-sm ml-2">{errors.password}</p>
+            )}
+            {isLogin && !isLoading && (
+              <div className="mt-1 text-right">
+                <button
+                  type="button"
+                  onClick={handlePasswordReset}
+                  className={`${isDark ? 'text-purple-300 hover:text-purple-200' : 'text-purple-600 hover:text-purple-700'} text-xs font-medium`}
+                >
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
             )}
           </div>
 

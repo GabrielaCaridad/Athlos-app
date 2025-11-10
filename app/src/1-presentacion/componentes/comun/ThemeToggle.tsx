@@ -7,7 +7,6 @@
  *
  * Accesibilidad
  * - El botón usa un ícono (Sol/Luna) y animación de “thumb” para indicar estado.
-
  */
 // ThemeToggle: interruptor de tema claro/oscuro para la app.
 import { Sun, Moon } from 'lucide-react';

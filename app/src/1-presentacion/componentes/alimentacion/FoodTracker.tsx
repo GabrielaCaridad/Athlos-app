@@ -1,9 +1,6 @@
-// FoodTracker
-// ------------------------------------------------------------
-// Componente principal de nutrición: muestra el diario del día,
-// permite buscar alimentos (base local + USDA), añadirlos a un
-// carrito y persistirlos en Firestore por comida (desayuno, etc.).
-//-------------------------------------------------------------
+// Propósito: registrar alimentos del día, buscar (base local + USDA) y ver totales.
+// Contexto: usa foodDatabase (userId+date YYYY-MM-DD UTC), servicios userFoodService y usdaFoodAPI.
+//           Índices: foodDatabase(userId+date+createdAt DESC) y foodDatabase(userId+date DESC) para rangos.
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Search, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -13,7 +10,10 @@ import {
   DatabaseFood, 
   UserFoodEntry 
 } from '../../../2-logica-negocio/servicios/foodDataService';
+import { foodService } from '../../../3-acceso-datos/firebase/firestoreService'; // (Limpieza) helper UTC
 import { usdaFoodService, AdaptedUSDAFood } from '../../../3-acceso-datos/apis-externas/usdaFoodAPI';
+import { useToast } from '../../componentes/comun/ToastProvider'; // Toasts del host global
+import { formatDateYYYYMMDD } from '../../../utils/date'; // Util para normalizar fecha de hoy en UTC
 
 interface FoodTrackerProps {
   isDark: boolean;
@@ -30,7 +30,8 @@ const MEAL_CONFIG = {
 
 export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const { user } = useAuth();
-  // Utilidad: permite decimales con coma o punto en los inputs numéricos
+  const toast = useToast(); // Toasts visibles sobre la UI (host global con alto z-index)
+  // Qué hace: permite decimales con coma o punto en inputs numéricos
   const parseDecimal = useCallback((v: string) => {
     if (!v) return 0;
     const normalized = v.replace(',', '.').trim();
@@ -41,7 +42,8 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   // Estados principales del día seleccionado y UI
   const [userFoods, setUserFoods] = useState<UserFoodEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  // Ojo: clave de fecha normalizada YYYY-MM-DD en UTC (consistencia con backend/chat)
+  const [selectedDate, setSelectedDate] = useState(foodService.toUTCDateKey(new Date()));
   const [expandedMeals, setExpandedMeals] = useState<Record<MealType, boolean>>({
     breakfast: true,
     lunch: true,
@@ -100,16 +102,17 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   };
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isProcessingCart, setIsProcessingCart] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Totales del día (se recalculan en render; el tamaño de la lista es manejable)
-  const totalCalories = userFoods.reduce((sum, food) => sum + food.calories, 0);
+  // Bloque: totales del día derivados de la lista (cálculo barato en render)
+  const totalCalories = userFoods.reduce((sum, food) => sum + Number(food.calories || 0), 0); // Normalizo a number
   const totalProtein = Math.round(userFoods.reduce((sum, f) => sum + (f.protein || 0), 0));
   const totalCarbs = Math.round(userFoods.reduce((sum, f) => sum + (f.carbs || 0), 0));
   const totalFats = Math.round(userFoods.reduce((sum, f) => sum + (f.fats || 0), 0));
 
   
 
-  // Cargar alimentos del día seleccionado + prefetch semanal para KPIs
+  // Efecto: carga alimentos del día y hace prefetch semanal para KPIs
   useEffect(() => {
     const loadData = async () => {
       if (!user) {
@@ -117,22 +120,27 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         return;
       }
       try {
-        // Calcula los límites de fecha dentro del efecto para evitar recargas innecesarias
-        const today = new Date().toISOString().split('T')[0];
+        // Cálculo local de límites para prefetch semanal (Dom-Dom simple por 7 días atrás)
+        const today = formatDateYYYYMMDD(new Date());
         const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        // Índice requerido: foodDatabase(userId ASC, date ASC, createdAt DESC)
         const foods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
         setUserFoods(foods);
+        setLoadError(null);
         // Prefetch semanal silencioso (no usado directamente aquí)
         userFoodService.getNutritionStats(user.uid, weekAgo, today).catch(() => {});
       } catch (error) {
         console.error('Error loading foods:', error);
-        setUserFoods([]);
+        // Ojo: mantenemos última lista visible; notificamos con toast
+        setLoadError('No se pudieron cargar los alimentos.');
+        toast.error('No se pudieron cargar los alimentos.');
       }
     };
     loadData();
-  }, [user, selectedDate]);
+  }, [user, selectedDate, toast]);
 
-  // Búsqueda: consulta base local y, si está configurado, la API de USDA
+  // Función: búsqueda local + USDA (si está configurado)
+  // Por qué: combinar base propia con resultados verificados del USDA.
   const handleSearch = useCallback(async (term?: string) => {
     const searchValue = (term ?? searchTerm).trim();
     if (!searchValue) {
@@ -160,8 +168,17 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
 
   // Carrito: añadir, actualizar cantidad, eliminar y guardar en Firestore
   const handleAddToCart = (food: CommonFood, isFromDatabase: boolean, fdcId?: number) => {
+  // Generación de id estable para cada ítem del carrito
+    const genId = () => {
+      try {
+        const id = (globalThis as unknown as { crypto?: { randomUUID?: () => string } })?.crypto?.randomUUID?.();
+        return id || `cart_${Date.now()}_${Math.random()}`;
+      } catch {
+        return `cart_${Date.now()}_${Math.random()}`;
+      }
+    };
     const cartItem: CartItem = {
-      id: `cart_${Date.now()}_${Math.random()}`,
+      id: genId(),
       food: { ...food, fdcId },
       quantity: 1,
       isFromDatabase,
@@ -182,6 +199,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
 
   // Persiste todos los ítems del carrito para la fecha seleccionada
   const saveCart = async () => {
+    // Ojo: botón visible pero no ejecuta si no hay usuario o carrito vacío
     if (!user || cart.length === 0) return;
     try {
       setIsProcessingCart(true);
@@ -228,8 +246,12 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
       setSearchTerm('');
       setDatabaseFoods([]);
       setUsdaResults([]);
+      toast.success('Guardado'); // Feedback de éxito
     } catch (err) {
       console.error('Error saving cart:', err);
+      // Ojo: mantenemos carrito; mostramos código de error si existe
+      const code = (err as { code?: string })?.code || '';
+      toast.error(`Error al guardar${code ? ` (${code})` : ''}. Intenta nuevamente.`);
     } finally {
       setIsProcessingCart(false);
     }
@@ -269,6 +291,13 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
               />
             </div>
           </div>
+
+          {/* Mensaje de error de carga */}
+          {loadError && (
+            <div className={`mb-4 p-3 rounded-xl border text-sm ${isDark ? 'bg-red-900/30 border-red-700 text-red-200' : 'bg-red-50 border-red-200 text-red-800'}`}>
+              {loadError}
+            </div>
+          )}
 
           {/* Barra de macros minimalista */}
           <div className="grid grid-cols-3 gap-4">
@@ -457,7 +486,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
             </div>
 
             {/* Contenido scrollable: resultados + registro manual */}
-            <div className={`flex-1 overflow-y-auto ${cart.length > 0 ? 'pb-40' : 'pb-6'}`}>
+            <div className={`flex-1 overflow-y-auto pb-40`}>
               {/* Resultados */}
               <div className="px-8 py-6">
               {isSearching ? (
@@ -466,6 +495,20 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                 </div>
               ) : (
                 <div className="space-y-2">
+                  {/* Aviso cuando USDA está vacío pero la base local sí tiene resultados */}
+                  {usdaFoodService.isConfigured() && searchTerm.trim().length >= 2 && usdaResults.length === 0 && databaseFoods.length > 0 && (
+                    <div className={`mb-2 p-3 rounded-xl text-xs ${isDark ? 'bg-amber-900/20 border border-amber-700 text-amber-200' : 'bg-amber-50 border border-amber-200 text-amber-700'}`}>
+                      El servicio externo (USDA) no devolvió resultados ahora (o está temporalmente inestable). Te mostramos opciones de la base local.
+                    </div>
+                  )}
+
+                  {/* Aviso sin resultados en ninguna fuente */}
+                  {searchTerm.trim().length >= 2 && usdaResults.length === 0 && databaseFoods.length === 0 && (
+                    <div className={`mb-2 p-3 rounded-xl text-xs ${isDark ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                      No encontramos resultados para “{searchTerm}”. Prueba con otra palabra o añade el alimento manualmente.
+                    </div>
+                  )}
+
                   {/* USDA Results */}
                   {usdaResults.map((food) => (
                     <button
@@ -526,6 +569,10 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                       onChange={(e) => setCustomFood({ ...customFood, name: e.target.value })}
                       className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white placeholder-gray-500' : 'bg-gray-100 text-gray-900 placeholder-gray-500'}`}
                     />
+                    {/* Error inline: nombre requerido */}
+                    {!customFood.name.trim() && (
+                      <div className="col-span-1 md:col-span-2 -mt-2 text-sm text-red-500">El alimento debe tener nombre.</div>
+                    )}
                     <input
                       type="text"
                       placeholder="Porción (ej: 1 taza, 100 g)"
@@ -544,6 +591,10 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                         onChange={(e) => setCustomFood({ ...customFood, calories: parseDecimal(e.target.value) })}
                         className={`w-full px-3 py-2 rounded-lg border-none outline-none ${isDark ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}
                       />
+                      {/* Error inline: calorías requeridas y > 0 */}
+                      {(customFood.calories <= 0) && (
+                        <div className="col-span-2 md:col-span-5 -mt-2 text-sm text-red-500">Las calorías deben ser un número mayor que 0.</div>
+                      )}
                       <input
                         type="text"
                         inputMode="decimal"
@@ -623,7 +674,15 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                     </button>
                     <button
                       onClick={() => {
-                        if (!customFood.name.trim() || !customFood.serving.trim() || customFood.calories <= 0) return;
+                        // Validación simple + toasts
+                        if (!customFood.name || !customFood.name.trim()) {
+                          toast.error('El alimento debe tener nombre.');
+                          return;
+                        }
+                        if (customFood.calories <= 0 || Number.isNaN(customFood.calories)) {
+                          toast.error('Las calorías deben ser un número mayor que 0.');
+                          return;
+                        }
                         const toAdd: CommonFood = { ...customFood };
                         handleAddToCart(toAdd, false);
                         setCustomFood({ name: '', calories: 0, protein: 0, carbs: 0, fats: 0, fiber: 0, serving: '', category: 'other' });
@@ -637,12 +696,11 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
               )}
               </div>
             </div>
-
-            {/* Cart footer: lista pequeña + botón de guardar */}
-            {cart.length > 0 && (
-              <div className={`px-8 py-6 border-t ${isDark ? 'border-gray-800 bg-gray-800/50' : 'border-gray-200 bg-gray-50'} flex-shrink-0`}>
-                <div className="mb-4">
-                  <p className={`text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Carrito ({cart.length})</p>
+            {/* Cart footer: lista pequeña + botón de guardar (siempre visible) */}
+            <div className={`px-8 py-6 border-t ${isDark ? 'border-gray-800 bg-gray-800/50' : 'border-gray-200 bg-gray-50'} flex-shrink-0`}>
+              <div className="mb-4">
+                <p className={`text-sm font-medium mb-3 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Carrito ({cart.length})</p>
+                {cart.length > 0 ? (
                   <div className="space-y-2 max-h-32 overflow-y-auto">
                     {cart.map((item) => (
                       <div key={item.id} className={`flex items-center gap-3 p-2 rounded-lg ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
@@ -668,17 +726,23 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
                       </div>
                     ))}
                   </div>
-                </div>
-                
-                <button
-                  onClick={saveCart}
-                  disabled={isProcessingCart}
-                  className={`w-full py-4 rounded-xl font-semibold text-white transition-all ${isProcessingCart ? 'bg-gray-400 cursor-not-allowed' : isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'}`}
-                >
-                  {isProcessingCart ? 'Guardando...' : `Guardar ${cart.length} ${cart.length === 1 ? 'alimento' : 'alimentos'}`}
-                </button>
+                ) : (
+                  <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>No hay ítems en el carrito.</p>
+                )}
               </div>
-            )}
+              
+              <button
+                onClick={saveCart}
+                disabled={isProcessingCart || cart.length === 0}
+                className={`w-full py-4 rounded-xl font-semibold text-white transition-all ${
+                  (isProcessingCart || cart.length === 0)
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'
+                }`}
+              >
+                {isProcessingCart ? 'Guardando...' : 'Guardar'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -14,11 +14,10 @@
   ------------------------------------------------------------
 */
 
-import type { Timestamp } from 'firebase/firestore';
 import { Timestamp as FsTimestamp, setDoc, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
-import { userFoodService } from './foodDataService';
-import { workoutService } from './firestoreService';
+import type { UserFoodEntry } from './foodDataService';
+import type { WorkoutSession } from './firestoreService';
 import { db } from '../../3-acceso-datos/firebase/config';
 import { formatDateYYYYMMDD, calculateAge as calcAgeUtil } from '../../utils/date';
 import { aggregateMacros } from '../../utils/nutrition';
@@ -63,13 +62,7 @@ export interface UserProfile {
 }
 
 // Utilidad local: convertir Timestamp (Firestore) a Date de JS de forma segura
-function timestampToDate(ts?: Timestamp): Date | undefined {
-  try {
-    return ts?.toDate?.();
-  } catch {
-    return undefined;
-  }
-}
+// (se removió timestampToDate: ya no es necesario con consultas por rango)
 
 export class CorrelationInsightsService {
   /**
@@ -279,56 +272,81 @@ export class CorrelationInsightsService {
 
       // Construir la lista de fechas (de más antiguo a más reciente)
       const today = new Date();
-      const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+      const startUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
       const dates: string[] = [];
       for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(start);
-        d.setUTCDate(start.getUTCDate() - i);
+        const d = new Date(startUtc);
+        d.setUTCDate(startUtc.getUTCDate() - i);
         dates.push(formatDateYYYYMMDD(d));
       }
 
-      // Para cada fecha, obtener datos de alimentos y entrenamientos y consolidar
+      const startDateStr = dates[0];
+      const endDateStr = dates[dates.length - 1];
+      const startTs = FsTimestamp.fromDate(new Date(startDateStr + 'T00:00:00.000Z'));
+      const endTs = FsTimestamp.fromDate(new Date(endDateStr + 'T23:59:59.999Z'));
+
+      // Recuperar TODO el rango en 2 queries (foods, workouts) y agrupar por fecha
+      const foodsQ = query(
+        collection(db, 'userFoodEntries'),
+        where('userId', '==', userId),
+        where('date', '>=', startDateStr),
+        where('date', '<=', endDateStr)
+      );
+      const workoutsQ = query(
+        collection(db, 'workouts'),
+        where('userId', '==', userId),
+        where('createdAt', '>=', startTs),
+        where('createdAt', '<=', endTs)
+      );
+
+      const [foodsSnap, workoutsSnap] = await Promise.all([getDocs(foodsQ), getDocs(workoutsQ)]);
+
+      const foodsByDate = new Map<string, UserFoodEntry[]>();
+      for (const d of foodsSnap.docs) {
+        const data = d.data() as unknown as UserFoodEntry;
+        const day = String(data.date || '');
+        if (!foodsByDate.has(day)) foodsByDate.set(day, []);
+        foodsByDate.get(day)!.push(data);
+      }
+
+      const workoutsByDate = new Map<string, WorkoutSession[]>();
+      for (const d of workoutsSnap.docs) {
+        const data = d.data() as unknown as WorkoutSession;
+        const createdTs = (data as unknown as { createdAt?: FsTimestamp }).createdAt;
+        const created: Date | undefined = createdTs?.toDate?.();
+        const day = created ? formatDateYYYYMMDD(created) : '';
+        if (!day) continue;
+        if (!workoutsByDate.has(day)) workoutsByDate.set(day, []);
+        workoutsByDate.get(day)!.push(data);
+      }
+
       const points: CorrelationDataPoint[] = [];
       for (const date of dates) {
-        // Cargar en paralelo
-        const [foods, workouts] = await Promise.all([
-          userFoodService.getUserFoodsByDate(userId, date),
-          workoutService.getWorkoutsByDate(userId, date)
-        ]);
+        const foods = foodsByDate.get(date) || [];
+        const workouts = workoutsByDate.get(date) || [];
 
-  // Agregados nutricionales del día (util compartida)
-  const calories = foods.reduce((sum, f) => sum + (f.calories || 0), 0);
-  const { protein, carbs, fats } = aggregateMacros(foods);
+        const calories = foods.reduce((sum, f) => sum + (f.calories || 0), 0);
+        const { protein, carbs, fats } = aggregateMacros(foods);
         const fiber = foods.reduce((sum, f) => sum + (f.fiber || 0), 0);
 
-        // Entrenamientos del día
         const hadWorkout = workouts.length > 0;
         const workoutDuration = hadWorkout
-          ? workouts.reduce((sum, w) => sum + (w.duration || 0), 0)
+          ? workouts.reduce((sum, w) => sum + ((w.duration || 0)), 0)
           : undefined;
 
-        // Promedio de energía del día (prioriza postEnergyLevel, luego pre)
         const energySamples = workouts
           .map(w => (typeof w.postEnergyLevel === 'number' ? w.postEnergyLevel : w.preEnergyLevel))
           .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
         const energyLevel = energySamples.length > 0
           ? Math.max(1, Math.min(10, Math.round(this.calculateAverage(energySamples))))
-          : 5; // neutral cuando no hay workouts
+          : 5;
 
-        // Score de performance (promedio de los disponibles)
         const perfSamples = workouts
           .map(w => w.performanceScore)
           .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
         const performanceScore = perfSamples.length > 0
           ? Math.round(this.calculateAverage(perfSamples))
           : undefined;
-
-        // Uso de Timestamp (para asegurar el import tipado requerido y orden estable cuando sea útil)
-        workouts.sort((a, b) => {
-          const ta = timestampToDate(a.createdAt as Timestamp | undefined)?.getTime() || 0;
-          const tb = timestampToDate(b.createdAt as Timestamp | undefined)?.getTime() || 0;
-          return tb - ta;
-        });
 
         points.push({
           date,
@@ -358,7 +376,6 @@ export class CorrelationInsightsService {
         }))
       );
 
-      // Estadísticas generales útiles para validar insights (carbohidratos vs energía)
       const totalCarbs = points.reduce((sum, p) => sum + p.carbs, 0);
       const avgCarbs = points.length > 0 ? Math.round(totalCarbs / points.length) : 0;
       const highEnergyDays = points.filter(p => p.energyLevel >= 7);
@@ -377,7 +394,7 @@ export class CorrelationInsightsService {
         lowEnergyDays: lowEnergyDays.length,
         avgCarbsLowEnergy
       });
-  return points;
+      return points;
     } catch (error) {
       console.error('[CorrelationInsightsService] getCombinedData error:', error);
       return [];
@@ -591,6 +608,17 @@ export class CorrelationInsightsService {
    */
   async saveInsightsToFirestore(userId: string, insights: PersonalInsight[]): Promise<void> {
     try {
+      const auth = (await import('firebase/auth')).getAuth();
+      const authUid = auth.currentUser?.uid;
+      if (!authUid) {
+        console.warn('⚠️ [saveInsightsToFirestore] No hay usuario autenticado; omitiendo escritura.');
+        return;
+      }
+      if (authUid !== userId) {
+        console.warn('⚠️ [saveInsightsToFirestore] Mismatch de UID. auth.uid != docId', { authUid, docId: userId });
+        return;
+      }
+
       const insightsData = insights.map(i => ({
         id: i.id,
         type: i.type,
@@ -603,16 +631,18 @@ export class CorrelationInsightsService {
         createdAt: i.createdAt.toISOString()
       }));
 
-      await setDoc(doc(db, 'user_insights', userId), {
+      const docRef = doc(db, 'user_insights', userId);
+      await setDoc(docRef, {
         userId,
         insights: insightsData,
         lastUpdated: FsTimestamp.now(),
         version: 1
       });
 
-      console.log(`✅ Insights guardados en Firestore para usuario ${userId}`);
+      console.log(`✅ Insights guardados en Firestore para usuario ${userId} en doc: user_insights/${userId}`);
     } catch (err) {
       console.error('Error saving insights to Firestore:', err);
+      console.error('Sugerencia: Verifica reglas para /user_insights/{userId} y que el docId coincida con auth.uid');
       // No lanzamos error para no romper el flujo
     }
   }
@@ -714,6 +744,40 @@ export class CorrelationInsightsService {
     if (calorieConsistency) insights.push(calorieConsistency);
 
     return insights;
+  }
+
+  /** Lee insights guardados previamente para mostrar al instante si existen */
+  async getSavedInsights(userId: string): Promise<PersonalInsight[] | null> {
+    try {
+      const ref = doc(db, 'user_insights', userId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return null;
+      const data = snap.data() as Record<string, unknown>;
+      const arr = Array.isArray((data as { insights?: unknown[] }).insights) ? (data as { insights: unknown[] }).insights : [];
+      const mapped: PersonalInsight[] = arr.map((raw) => ({
+        id: String((raw as Record<string, unknown>).id ?? `ins_${Date.now()}`),
+        type: ((raw as Record<string, unknown>).type === 'pattern' || (raw as Record<string, unknown>).type === 'recommendation')
+          ? (raw as { type: 'pattern' | 'recommendation' }).type
+          : 'recommendation',
+        title: String((raw as Record<string, unknown>).title ?? 'Insight'),
+        description: String((raw as Record<string, unknown>).description ?? ''),
+        evidence: Array.isArray((raw as Record<string, unknown>).evidence)
+          ? ((raw as { evidence: unknown[] }).evidence.map((e: unknown) => String(e)))
+          : [],
+        actionable: String((raw as Record<string, unknown>).actionable ?? ''),
+        confidence: ((raw as Record<string, unknown>).confidence === 'high' || (raw as Record<string, unknown>).confidence === 'low')
+          ? (raw as { confidence: 'high' | 'low' }).confidence
+          : 'medium',
+        impactEstimated: ((raw as Record<string, unknown>).impactEstimated === 'high' || (raw as Record<string, unknown>).impactEstimated === 'low')
+          ? (raw as { impactEstimated: 'high' | 'low' }).impactEstimated
+          : 'medium',
+        createdAt: new Date(String((raw as Record<string, unknown>).createdAt ?? Date.now()))
+      }));
+      return mapped;
+    } catch (e) {
+      console.warn('[CorrelationInsightsService] getSavedInsights error:', e);
+      return null;
+    }
   }
 }
 

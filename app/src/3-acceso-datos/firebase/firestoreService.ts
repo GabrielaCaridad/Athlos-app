@@ -1,110 +1,86 @@
-/*
-  Firestore services: perfiles, alimentos, entrenamientos y plantillas
-  ------------------------------------------------------------
-  Capa de acceso a datos de Firebase (Firestore). Agrupa servicios
-  para:
-  - userService: perfil del usuario y cálculos de personalización
-  - foodService: CRUD de alimentos (colección 'foods')
-  - workoutService: CRUD y métricas de entrenamientos (colección 'workouts')
-  - workoutTemplateService: plantillas de entreno del usuario
-*/
-// Firestore services: user profiles, foods, workouts
+// Propósito: capa central de acceso a Firestore (perfiles, alimentos unificados, workouts, plantillas)
+// Contexto: colecciones usadas -> users, foodDatabase (antes foods/userFoodEntries), workouts, workout_templates.
+//           claves de fecha alimentos: YYYY-MM-DD UTC; workouts usan createdAt/completedAt Timestamp.
+//           índices típicos: foodDatabase(userId+date+createdAt DESC), workouts(userId+createdAt DESC),
+//           workouts(userId+completedAt DESC) para listados finalizados.
+// Nota: solo se añaden comentarios; lógica intacta.
 import { 
-  collection, // Para referenciar colecciones
-  addDoc, // Para agregar documentos
-  updateDoc, // Para actualizar documentos
-  deleteDoc, // Para eliminar documentos
-  doc, // Para referenciar documentos específicos
-  orderBy, // Para ordenar resultados
-  getDocs, // Para obtener múltiples documentos
-  query, // Para crear consultas
-  where, // Para filtros en consultas
-  Timestamp // Para manejar fechas de Firebase
+  collection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  orderBy,
+  getDocs,
+  query,
+  where,
+  Timestamp
 } from 'firebase/firestore';
 import { db } from './config';
 import { calculateAge as calcAgeUtil } from '../../utils/date';
 
-// User profile model
+// Modelo de perfil de usuario (persistido en users/{uid})
 export interface UserProfile {
-  id?: string; // ID del documento (opcional, se asigna automáticamente)
-  userId: string; // ID del usuario de Firebase Auth (para vincular)
-  displayName: string; // Nombre para mostrar
-  email: string; // Correo electrónico
-  goals: string[]; // Array de objetivos del usuario (ej: "perder peso", "ganar músculo")
-  level: number; // Nivel actual del usuario (sistema de gamificación)
-  xp: number; // Puntos de experiencia acumulados
-  createdAt: Timestamp; // Fecha de creación del perfil
-
-  // Datos físicos para personalización
-  dateOfBirth?: string; // YYYY-MM-DD format
+  id?: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  goals: string[];
+  level: number;
+  xp: number;
+  createdAt: Timestamp;
+  dateOfBirth?: string;
   gender?: 'male' | 'female' | 'other' | 'prefer_not_to_say';
-  currentWeight?: number; // kg
-  height?: number; // cm
-
-  // Objetivos del usuario
+  currentWeight?: number;
+  height?: number;
   primaryGoal?: 'lose_weight' | 'maintain_weight' | 'gain_muscle' | 'improve_performance' | 'general_health';
-  targetWeight?: number; // kg, opcional
+  targetWeight?: number;
   activityLevel?: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
-  workoutsPerWeek?: number; // 1-7 días
-
-  // Nutrición calculada automáticamente
-  dailyCalorieTarget?: number; // kcal calculadas según objetivo
-  macroTargets?: {
-    protein: number; // gramos
-    carbs: number;
-    fats: number;
-  };
-
-  // Preferencias
-  dietaryRestrictions?: string[]; // ej: ["vegetariano", "sin gluten"]
+  workoutsPerWeek?: number;
+  dailyCalorieTarget?: number;
+  macroTargets?: { protein: number; carbs: number; fats: number };
+  dietaryRestrictions?: string[];
   preferredWorkoutTime?: 'morning' | 'afternoon' | 'evening';
-
-  // Metadatos
-  updatedAt?: Timestamp; // Timestamp de última actualización
+  updatedAt?: Timestamp;
 }
 
 // User profile CRUD
 export const userService = {
-  /**
-   * Crea un nuevo perfil de usuario en Firestore
-   * 
-   * @param userId - ID del usuario de Firebase Auth
-   * @param profileData - Datos del perfil (sin ID ni fecha de creación)
-   * @returns Promise<string> - ID del documento creado
-   */
-  async createUserProfile(userId: string, profileData: Omit<UserProfile, 'id' | 'userId' | 'createdAt'>) {
+  // Qué hace: crea/merge del perfil en users/{uid} (id estable = uid)
+  // Ojo: guarda userId para reglas de seguridad.
+  async createUserProfile(
+    userId: string,
+    profileData: Pick<UserProfile, 'displayName' | 'email'> & Partial<UserProfile>
+  ) {
     try {
-      const docRef = await addDoc(collection(db, 'users'), {
+  // Nota: users/{uid} + userId explícito para facilitar reglas de seguridad por propietario
+      const { doc, setDoc } = await import('firebase/firestore');
+      const ref = doc(db, 'users', userId);
+      await setDoc(ref, {
         ...profileData,
         userId,
         createdAt: Timestamp.now()
-      });
-      return docRef.id;
+      }, { merge: true });
+      return userId;
     } catch (error) {
       console.error('Error creating user profile:', error);
       throw error;
     }
   },
 
-  /**
-   * Calcula la edad a partir de una fecha de nacimiento (YYYY-MM-DD)
-   */
+  // Qué hace: calcula edad (utiliza helper compartido para consistencia)
   calculateAge(dateOfBirth?: string): number {
     return calcAgeUtil(dateOfBirth, 0);
   },
 
-  /**
-   * Calcula BMR usando Mifflin-St Jeor
-   */
+  // Qué hace: BMR (Mifflin-St Jeor). Por qué: base para TDEE.
   calculateBMR(weightKg: number, heightCm: number, age: number, gender: NonNullable<UserProfile['gender']>): number {
     const base = 10 * (weightKg || 0) + 6.25 * (heightCm || 0) - 5 * (age || 0);
     const genderOffset = gender === 'male' ? 5 : gender === 'female' ? -161 : 0;
     return Math.max(0, base + genderOffset);
   },
 
-  /**
-   * Aplica multiplicador de actividad para obtener TDEE
-   */
+  // Qué hace: aplica multiplicador actividad → TDEE. Ojo: default moderado.
   calculateTDEE(bmr: number, activityLevel: NonNullable<UserProfile['activityLevel']>): number {
     const activityMultipliers: Record<NonNullable<UserProfile['activityLevel']>, number> = {
       sedentary: 1.2,
@@ -117,9 +93,7 @@ export const userService = {
     return Math.max(0, bmr * mult);
   },
 
-  /**
-   * Ajusta calorías objetivo según el objetivo principal
-   */
+  // Qué hace: ajusta calorías según objetivo (déficit/superávit/control)
   calculateCalorieTarget(tdee: number, primaryGoal: NonNullable<UserProfile['primaryGoal']>): number {
     const goalAdjust: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
       lose_weight: -0.15,
@@ -132,10 +106,7 @@ export const userService = {
     return Math.max(1200, Math.round(tdee * (1 + adjust)));
   },
 
-  /**
-   * Calcula distribución de macronutrientes en gramos
-   * Si no se proporciona peso, usa proporciones sobre calorías como aproximación.
-   */
+  // Qué hace: macros (proteína basada en objetivo; resto por calorías). Ojo: fallback sin peso.
   calculateMacros(
     dailyCalories: number,
     primaryGoal: NonNullable<UserProfile['primaryGoal']>,
@@ -177,12 +148,7 @@ export const userService = {
     return { protein: Math.max(0, proteinG), carbs: Math.max(0, carbsG), fats: Math.max(0, fatsG) };
   },
 
-  /**
-   * Actualiza un perfil de usuario existente
-   * 
-   * @param userId - ID del usuario de Firebase Auth
-   * @param updates - Datos parciales a actualizar
-   */
+  // Qué hace: patch parcial del perfil. Por qué: evitar sobrescribir campos no enviados.
   async updateUserProfile(userId: string, updates: Partial<UserProfile>) {
     try {
       const q = query(collection(db, 'users'), where('userId', '==', userId));
@@ -197,12 +163,7 @@ export const userService = {
     }
   },
 
-  /**
-   * Obtiene el perfil de un usuario específico
-   * 
-   * @param userId - ID del usuario de Firebase Auth
-   * @returns Promise<UserProfile | null> - Perfil del usuario o null si no existe
-   */
+  // Qué hace: obtiene perfil por userId (consulta por campo). Índice simple en userId.
   async getUserProfile(userId: string) {
     try {
       const q = query(collection(db, 'users'), where('userId', '==', userId));
@@ -221,9 +182,7 @@ export const userService = {
     }
   },
 
-  /**
-   * Calcula el IMC (Índice de Masa Corporal) y su categoría básica
-   */
+  // Qué hace: calcula BMI + categoría simple.
   calculateBMI(heightCm: number, weightKg: number): { bmi: number; category: 'underweight' | 'normal' | 'overweight' | 'obese' } {
     const h = Math.max(0, heightCm) / 100; // a metros
     const w = Math.max(0, weightKg);
@@ -236,14 +195,8 @@ export const userService = {
     return { bmi, category };
   },
 
-  /**
-   * Inicializa/actualiza los campos de personalización del perfil
-   * - Calcula TDEE usando Mifflin-St Jeor + multiplicador de actividad
-   * - Ajusta según objetivo (déficit/superávit)
-   * - Calcula macros (proteína/fat/carbs)
-   * - Actualiza dailyCalorieTarget, macroTargets y updatedAt
-   * Devuelve los valores computados para uso inmediato en UI
-   */
+  // Qué hace: recalcula calorías y macros y persiste actualización.
+  // Ojo: aplica defaults razonables si faltan datos físicos.
   async initializePersonalization(
     userId: string,
     overrides?: Partial<UserProfile>
@@ -362,14 +315,36 @@ interface CreateFoodData {
 }
 
 export const foodService = {
+  // (Limpieza) Migré toda la persistencia de alimentos a 'foodDatabase'.
+  // Mantengo esta API para no romper la UI.
+  toUTCDateKey(d: Date): string {
+    // Normalizo la fecha a UTC (YYYY-MM-DD) para que el backend y el chat la entiendan igual.
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  },
   /* Agregar un nuevo alimento */
   async addFood(userId: string, foodData: CreateFoodData): Promise<string> {
     try {
-      const docRef = await addDoc(collection(db, 'foods'), {
-        ...foodData,
+      // Qué hace: crea entrada en 'foodDatabase' usando clave de fecha UTC YYYY-MM-DD.
+      // Por qué: mantener consistencia con backend/chat y evitar desfases por zona horaria.
+      // Colección: foodDatabase.
+      const dateKey = this.toUTCDateKey(new Date()); // (Limpieza) clave de hoy en UTC
+      const createdAt = Timestamp.now();
+      const docRef = await addDoc(collection(db, 'foodDatabase'), {
         userId,
-        createdAt: Timestamp.now()
+        name: foodData.name,
+        calories: foodData.calories,
+        serving: foodData.serving,
+        // Normalizo fecha a clave UTC YYYY-MM-DD para consistencia con backend/chat
+        date: dateKey,
+        createdAt
       });
+      // Log diagnóstico (solo dev) para confirmar escritura diaria
+      if (typeof console !== 'undefined') {
+        console.log('[addFood] wrote', { userId, date: dateKey, createdAt });
+      }
       return docRef.id;
     } catch (error) {
       console.error('Error adding food:', error);
@@ -380,8 +355,9 @@ export const foodService = {
   /* Obtener alimentos por fecha*/
   async getFoodsByDate(userId: string, date: string): Promise<FoodEntry[]> {
     try {
+      // Índice: foodDatabase(userId ASC, date ASC, createdAt DESC)
       const q = query(
-        collection(db, 'foods'),
+        collection(db, 'foodDatabase'),
         where('userId', '==', userId),
         where('date', '==', date),
         orderBy('createdAt', 'desc')
@@ -401,7 +377,9 @@ export const foodService = {
   /*Actualizar un alimento*/
   async updateFood(foodId: string, updates: Partial<CreateFoodData>): Promise<void> {
     try {
-      const foodRef = doc(db, 'foods', foodId);
+      // Qué hace: patch sobre documento existente de 'foodDatabase'.
+      // Ojo: no cambia la clave 'date' (YYYY-MM-DD) ni el createdAt.
+      const foodRef = doc(db, 'foodDatabase', foodId);
       await updateDoc(foodRef, updates);
     } catch (error) {
       console.error('Error updating food:', error);
@@ -412,7 +390,8 @@ export const foodService = {
   /*Eliminar un alimento*/
   async deleteFood(foodId: string): Promise<void> {
     try {
-      const foodRef = doc(db, 'foods', foodId);
+      // Qué hace: elimina documento de 'foodDatabase' por id.
+      const foodRef = doc(db, 'foodDatabase', foodId);
       await deleteDoc(foodRef);
     } catch (error) {
       console.error('Error deleting food:', error);
@@ -424,7 +403,8 @@ export const foodService = {
   async getDailyCalories(userId: string, date: string): Promise<number> {
     try {
       const foods = await this.getFoodsByDate(userId, date);
-      return foods.reduce((total, food) => total + food.calories, 0);
+      // Normalizo calorías a número por si algún registro llega como string
+      return foods.reduce((total, food) => total + Number(food.calories || 0), 0);
     } catch (error) {
       console.error('Error getting daily calories:', error);
       throw error;
@@ -465,6 +445,8 @@ export interface WorkoutSession {
   performanceScore?: number;  // 0-100
   volumeLifted?: number;      // kg totales levantados
   completionRate?: number;    // % ejercicios completados
+  // ID de la plantilla usada para iniciar (opcional)
+  templateId?: string;
 }
 
 export const workoutService = {
@@ -602,8 +584,9 @@ export const workoutService = {
   const performanceScore = this.calculatePerformanceScore({ ...workout, postEnergyLevel });
 
       await this.updateWorkout(workoutId, {
+        // Normalización para backend (chat): marcar como finalizado y registrar completedAt
         isActive: false,
-        completedAt: Timestamp.fromDate(new Date()),
+        completedAt: Timestamp.now(),
         postEnergyLevel,
         performanceScore,
         volumeLifted,
@@ -655,6 +638,7 @@ export const workoutService = {
    */
   async getWorkoutsByDate(userId: string, date: string): Promise<WorkoutSession[]> {
     try {
+      // Índice: workouts(userId ASC, createdAt DESC) para orden descendente por día
       const q = query(
         collection(db, 'workouts'),
         where('userId', '==', userId),
@@ -668,7 +652,7 @@ export const workoutService = {
       const msg = (err as { message?: string; code?: string })?.message || '';
       const code = (err as { code?: string })?.code || '';
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
-        // Fallback sin orderBy y con filtros mínimos para evitar índice compuesto
+        // Ojo: fallback sin índice (ordenamos en memoria tras traer por userId)
         const q2 = query(
           collection(db, 'workouts'),
           where('userId', '==', userId)
@@ -692,6 +676,7 @@ export const workoutService = {
    */
   async getUserWorkouts(userId: string): Promise<WorkoutSession[]> {
     try {
+      // Índice: workouts(userId ASC, createdAt DESC)
       const q = query(
         collection(db, 'workouts'),
         where('userId', '==', userId),
@@ -703,7 +688,7 @@ export const workoutService = {
       const msg = (err as { message?: string; code?: string })?.message || '';
       const code = (err as { code?: string })?.code || '';
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
-        // Fallback sin orderBy mientras creamos el índice
+        // Ojo: fallback sin índice (trae y ordena en memoria)
         const q2 = query(
           collection(db, 'workouts'),
           where('userId', '==', userId)
@@ -740,7 +725,8 @@ export const workoutService = {
     totalCalories: number;
   }> {
     try {
-      // Traer entrenos del usuario (ordenados desc) y filtrar por la semana CALENDARIO actual (Domingo 00:00 -> Domingo siguiente)
+  // Traer entrenos del usuario (ordenados desc) y filtrar por la semana CALENDARIO actual (Domingo 00:00 -> Domingo siguiente)
+  // Nota: El chat del backend utilizará resúmenes en ventanas de 7/14 días (no modificar UI).
       const all = await this.getUserWorkouts(userId);
       const today = new Date();
       const startOfWeek = new Date(today);

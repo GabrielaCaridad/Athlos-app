@@ -1,5 +1,6 @@
-// En este hook calculo y expongo insights personales del usuario (patrones útiles).
-// Importo hooks de React para manejar estado, efectos y callbacks memoizados.
+// Propósito: calcular y exponer insights personales (correlaciones simples y patrones) para el usuario.
+// Contexto: primero muestra cache local si existe para respuesta rápida, luego recalcula en segundo plano.
+// Ojo: no dispara cálculo si falta userId; maneja errores devolviendo mensaje simple para UI.
 import { useEffect, useState, useCallback } from 'react';
 // Traigo la sesión actual para conocer el userId si no me lo pasan desde fuera.
 import { useAuth } from './useAuth';
@@ -14,16 +15,16 @@ export interface UsePersonalInsightsReturn {
 }
 
 export const usePersonalInsights = (userIdOverride?: string): UsePersonalInsightsReturn => {
-  // Si no me entregan un userId explícito, ocupo el que viene de la sesión.
+  // UserId: prioriza override externo; si no, el uid de la sesión para flexibilidad (p.e. vista admin).
   const { user } = useAuth();
   const userId: string | null = (userIdOverride ?? user?.uid) ?? null;
 
-  // Estados del hook: lista de insights, bandera de carga y error a mostrar en UI.
+  // Estado: insights guardados/recalculados, bandera de carga y error legible.
   const [insights, setInsights] = useState<PersonalInsight[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Esta función vuelve a consultar los insights (útil para un botón "Refrescar").
+  // Refetch: fuerza recomputación manual (botón refrescar) ignorando cache previa en memoria.
   const fetchInsights = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
@@ -41,19 +42,29 @@ export const usePersonalInsights = (userIdOverride?: string): UsePersonalInsight
     }
   }, [userId]);
 
-  // Al montar (y cuando cambia el userId) hago una primera consulta de insights.
+  // Efecto inicial: mostrar cache si hay para UX rápida; si no, marcar loading durante el primer cálculo.
+  // Luego refresca siempre para asegurar datos recientes, sin bloquear si ya había cache.
   useEffect(() => {
     let canceled = false;
     const run = async () => {
       if (!userId) return;
-      setLoading(true);
       setError(null);
       try {
         const service = new CorrelationInsightsService();
-        const result = await service.analyzeUserPatterns(userId, 14);
-        if (!canceled) {
-          setInsights(result);
+        // 1) Cargar insights guardados para mostrar algo al instante
+        const cached = await service.getSavedInsights(userId);
+        if (!canceled && Array.isArray(cached) && cached.length > 0) {
+          setInsights(cached);
         }
+
+        // 2) Si no había cache, indicar loading durante el primer cálculo
+        if (!cached || cached.length === 0) {
+          if (!canceled) setLoading(true);
+        }
+
+        // 3) Refrescar en segundo plano (no bloquear la UI si había cache)
+        const fresh = await service.analyzeUserPatterns(userId, 14);
+        if (!canceled) setInsights(fresh);
       } catch (err: unknown) {
         console.error('[usePersonalInsights] initial fetch error:', err);
         if (!canceled) {

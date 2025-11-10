@@ -1,27 +1,17 @@
-/**
- * Dashboard principal de inicio
- *
- * Qué muestra
- * - Progreso de hoy hacia el objetivo calórico diario (desde el perfil del usuario).
- * - Resumen semanal compacto: comidas de hoy, entrenamientos de la semana, energía promedio, cantidad de insights.
- * - Último insight destacado y accesos rápidos a secciones clave (Alimentación, Entrenamientos, Correlaciones).
- * - Aviso de análisis semanal proactivo (si hay uno sin leer) con acceso directo al chatbot.
- *
- * De dónde salen los datos
- * - useUserData(uid, 30): alimentos y entrenamientos recientes, en tiempo real (30 días).
- * - userService.getUserProfile: configuración del usuario (p. ej., dailyCalorieTarget).
- * - usePersonalInsights(uid): lista de insights calculados a partir de TUS datos.
- *
- * Notas
- * - Evitamos cálculos costosos: solo derivamos métricas locales cuando cambian foods/workouts.
- * - createdAt puede venir como Date o Timestamp (Firestore): se normaliza a Date antes de comparar.
- */
+// Propósito: mostrar progreso diario, resumen semanal y avisos (perfil, análisis proactivo).
+// Contexto: usa hooks (useUserData, usePersonalInsights) que requieren índices:
+//           foodDatabase(userId+date DESC) y workouts(userId+createdAt DESC).
+// Qué hace: deriva métricas locales (calorías hoy, entrenos últimos 7 días, energía media) en efectos.
+// Por qué: evitar cálculos pesados en render y mantener reactivo sin reconsultas manuales.
+// Ojo: normaliza 'hoy' con foodService.toUTCDateKey para coherencia con backend/chat.
+// Nota: timestamps Firestore pueden venir como Date o Timestamp; se unifican antes de comparar.
 import { useEffect, useState } from 'react';
 import { Utensils, Dumbbell, Zap, Brain, TrendingUp } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePersonalInsights } from '../../hooks/usePersonalInsights';
-// (centralized data via useUserData; direct services not needed here)
+// Nota: datos centralizados vía useUserData; no se consumen servicios directos aquí.
 import { useUserData } from '../../hooks/useUserData';
+import { foodService } from '../../../3-acceso-datos/firebase/firestoreService'; // (Limpieza) helper fecha UTC
 import { Link, useNavigate } from 'react-router-dom';
 import { userService } from '../../../2-logica-negocio/servicios';
 import { getLatestUnreadProactive, markProactiveAsRead, ProactiveMessage } from '../../../2-logica-negocio/servicios';
@@ -48,6 +38,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
   const [avgEnergy, setAvgEnergy] = useState(0);
   const [loading, setLoading] = useState(true);
   const [unreadProactive, setUnreadProactive] = useState<ProactiveMessage | null>(null);
+  const [profileIncomplete, setProfileIncomplete] = useState(false);
 
   const [calorieTarget, setCalorieTarget] = useState<number>(2200);
   const targetMeals = 3;
@@ -69,8 +60,18 @@ export default function Dashboard({ isDark }: DashboardProps) {
           activityLevel: p?.activityLevel,
           dailyCalorieTarget: savedTarget
         });
+        // Evaluar si el perfil está incompleto (peso/altura/objetivo)
+        const weight = p?.currentWeight;
+        const height = p?.height;
+        const goal = p?.primaryGoal;
+        const incomplete = !(typeof weight === 'number' && weight > 0)
+          || !(typeof height === 'number' && height > 0)
+          || !(typeof goal === 'string' && goal.length > 0);
+        setProfileIncomplete(incomplete);
       } catch (e) {
         console.warn('No se pudo cargar el perfil para objetivo calórico:', e);
+        // Si no hay perfil, mostrar banner igualmente
+        setProfileIncomplete(true);
       }
     };
     loadProfile();
@@ -84,10 +85,19 @@ export default function Dashboard({ isDark }: DashboardProps) {
     // Derivar métricas locales cuando los datos cambian (en tiempo real)
     try {
       setLoading(true);
-      // 1) Hoy: total de calorías y número de comidas
-      const todayStr = new Date().toISOString().split('T')[0];
+  // 1) Hoy: clave UTC consistente con foodDatabase
+  const todayStr = foodService.toUTCDateKey(new Date()); // Normalización fecha → YYYY-MM-DD UTC
+      // Log diagnóstico dev antes de calcular métricas
+      // Nota(dev): log de diagnóstico solo para verificar fechas guardadas
+      console.log(
+        '[Dashboard] todayKey',
+        todayStr,
+        'foods:',
+        foods.length,
+        foods.map((f) => (f as { date?: string }).date)
+      );
       const todaysFoods = foods.filter(f => f.date === todayStr) as FoodEntryLite[];
-      const caloriesSum = todaysFoods.reduce((sum, f) => sum + (f.calories || 0), 0);
+      const caloriesSum = todaysFoods.reduce((sum, f) => sum + Number(f.calories || 0), 0); // Normalizo a number
       setTotalCaloriesToday(Math.round(caloriesSum));
       setMealsTodayCount(todaysFoods.length);
       // Calorías objetivo y consumidas hoy
@@ -99,7 +109,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
         used: calorieTarget
       });
 
-      // 2) Últimos 7 días: cantidad de entrenamientos y energía promedio post-entreno
+  // 2) Últimos 7 días: cantidad entrenos y energía media post-entreno
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
       const recentWorkouts = workouts.filter((w) => {
@@ -155,6 +165,24 @@ export default function Dashboard({ isDark }: DashboardProps) {
 
   return (
     <div className={`py-4 ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+      {/* Banner para completar perfil */}
+      {profileIncomplete && (
+        <div className={`mb-4 p-4 rounded-2xl border ${isDark ? 'bg-yellow-900/30 border-yellow-700 text-yellow-200' : 'bg-yellow-50 border-yellow-200 text-yellow-800'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-semibold">Completa tu perfil para mejorar tus insights</p>
+              <p className="text-sm opacity-90">Agrega tu peso, altura y objetivo principal en Configuración.</p>
+            </div>
+            <button
+              onClick={() => navigate('/config')}
+              className={`${isDark ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-600 hover:bg-yellow-500 text-white'} px-3 py-2 rounded-lg text-sm font-medium`}
+              type="button"
+            >
+              Ir a Configuración
+            </button>
+          </div>
+        </div>
+      )}
       {unreadProactive && (
         <div className={`mb-4 p-4 rounded-xl flex items-start justify-between gap-3 border ${
           isDark
@@ -239,7 +267,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
         
         <div className="flex items-center gap-4 mb-2">
           <span className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-            {totalCaloriesToday.toLocaleString()}
+            {Number(totalCaloriesToday).toLocaleString()}
           </span>
           <span className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
             / {calorieTarget.toLocaleString()} kcal
@@ -278,7 +306,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {/* Comidas registradas hoy */}
+              {/* Tarjeta: comidas registradas hoy */}
             <div className={`p-4 rounded-xl ${
               isDark ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}>
@@ -296,7 +324,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
               </p>
             </div>
 
-            {/* Entrenamientos semana */}
+              {/* Tarjeta: entrenamientos esta semana */}
             <div className={`p-4 rounded-xl ${
               isDark ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}>
@@ -323,7 +351,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
               </button>
             </div>
 
-            {/* Energía */}
+              {/* Tarjeta: energía promedio post-entreno */}
             <div className={`p-4 rounded-xl ${
               isDark ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}>
@@ -341,7 +369,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
               </p>
             </div>
 
-            {/* Insights */}
+              {/* Tarjeta: nº total de insights identificados */}
             <div className={`p-4 rounded-xl ${
               isDark ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}>

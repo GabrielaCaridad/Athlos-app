@@ -1,3 +1,18 @@
+// Generación de insights personalizados (Cloud Function v2)
+// ------------------------------------------------------------
+// Objetivo: analizar datos históricos del usuario (nutrición + entrenos)
+// y devolver hasta 6 insights accionables con evidencia y recomendación.
+// Flujo:
+// 1. Validar auth y payload (dataJSON + profile).
+// 2. Construir prompt con rangos científicos fuerza/hipertrofia.
+// 3. Llamar a OpenAI (gpt-4o-mini) en modo JSON para respuesta estructurada.
+// 4. Parsear defensivamente y normalizar cada insight.
+// 5. Retornar lista lista para guardar en Firestore (caller decide persistencia).
+// Notas:
+// - No se persisten aquí los insights: responsabilidad del cliente.
+// - Se exige OPENAI_API_KEY como secret (Firebase). Si falta: failed-precondition.
+// - dataJSON debe ser ya un resumen limpio (no hacemos limpieza pesada aquí).
+// - Limitamos a 6 insights para foco y evitar ruido.
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import OpenAI from 'openai';
 import * as admin from 'firebase-admin';
@@ -30,14 +45,14 @@ export interface InsightResponse {
 
 export const generateInsights = onCall({ region: 'us-central1', timeoutSeconds: 60, memory: '512MiB', secrets: ['OPENAI_API_KEY'] }, async (request) => {
   try {
-    // 1. Auth required
+  // 1. Auth requerido
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Usuario debe estar autenticado');
     }
 
     const { dataJSON, profile } = (request.data || {}) as GenerateInsightsRequest;
 
-    // 2. Validate payload
+  // 2. Validar payload mínimo
     if (!dataJSON || !profile) {
       throw new HttpsError('invalid-argument', 'Se requieren dataJSON y profile');
     }
@@ -47,7 +62,7 @@ export const generateInsights = onCall({ region: 'us-central1', timeoutSeconds: 
       throw new HttpsError('failed-precondition', 'OpenAI API key no configurada');
     }
 
-    const systemPrompt = `Eres un sistema experto de análisis nutricional y de rendimiento deportivo especializado en entrenamiento de FUERZA/HIPERTROFIA (GYM), NO atletas de resistencia.
+  const systemPrompt = `Eres un sistema experto de análisis nutricional y de rendimiento deportivo especializado en entrenamiento de FUERZA/HIPERTROFIA (GYM), NO atletas de resistencia.
 
 ## PERFIL DEL USUARIO:
 - Peso: ${profile.weight}kg
@@ -102,7 +117,7 @@ Responde SOLO con un objeto JSON que tenga la key "insights" con el array.`;
 
     const openai = new OpenAI({ apiKey });
 
-    const completion = await openai.chat.completions.create({
+  const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemPrompt },
@@ -136,7 +151,7 @@ Responde SOLO con un objeto JSON que tenga la key "insights" con el array.`;
       throw new HttpsError('internal', 'Respuesta inválida de OpenAI');
     }
 
-    console.log(`✅ Generados ${insightsArray.length} insights para usuario ${request.auth.uid}`);
+  console.log(`✅ [Insights] Generados ${insightsArray.length} insights para usuario ${request.auth.uid}`);
 
     return {
       success: true,
@@ -145,7 +160,7 @@ Responde SOLO con un objeto JSON que tenga la key "insights" con el array.`;
       userId: request.auth.uid,
     };
   } catch (error: any) {
-    console.error('Error generando insights:', error);
+  console.error('❌ [Insights] Error generando insights:', error);
     if (error?.code && typeof error.code === 'string') {
       // Already an HttpsError
       throw error;

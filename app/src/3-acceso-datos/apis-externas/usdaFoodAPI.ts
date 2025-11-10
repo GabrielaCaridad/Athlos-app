@@ -1,13 +1,26 @@
-/*
-  usdaFoodAPI
-  ------------------------------------------------------------
-  Integración con USDA FoodData Central. Traduce consultas del usuario
-  (ES → EN) para mejorar resultados, adapta la respuesta al formato
-  interno y traduce nombres al español cuando es posible.
-*/
-// usdaFoodAPI.ts - Integración con USDA FoodData Central
+// Propósito: integrar con USDA FoodData Central, traduciendo consulta ES→EN y
+//            adaptando resultados al formato interno (nutrientes, porción, categorías).
+// Contexto: se usa desde componentes de búsqueda de alimentos para ampliar la base local.
+// Qué hace: traduce query, consulta API, mapea nutrientes claves y devuelve alimentos normalizados.
+// Ojo: requiere VITE_USDA_API_KEY. Aplica caché en memoria para reducir llamadas.
 const USDA_API_KEY = import.meta.env.VITE_USDA_API_KEY as string | undefined;
 const USDA_BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
+
+// Qué hace: fetch con timeout y reintentos básicos para 5xx/429
+async function fetchWithRetry(url: string, opts: RequestInit = {}, attempts = 2, backoffMs = 600): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(url, { ...opts, signal: controller.signal });
+    if (!res.ok && attempts > 0 && (res.status === 429 || res.status >= 500)) {
+      await new Promise(r => setTimeout(r, backoffMs));
+      return fetchWithRetry(url, opts, attempts - 1, backoffMs * 2);
+    }
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // Interfaces
 export interface USDAFood {
@@ -47,7 +60,7 @@ export interface AdaptedUSDAFood {
   isVerified: true;
 }
 
-// Mapeo de nutrientes USDA
+// Mapeo de nutrientes USDA → IDs oficiales
 const NUTRIENT_MAP = {
   ENERGY: 1008,      // Calorías (kcal)
   PROTEIN: 1003,     // Proteína (g)
@@ -56,7 +69,7 @@ const NUTRIENT_MAP = {
   FIBER: 1079,       // Fibra dietética (g)
 };
 
-// Traducciones español-inglés (expandible)
+// Diccionario ES→EN para mejorar recall de la API
 const FOOD_TRANSLATIONS: Record<string, string> = {
   // Frutas
   'manzana': 'apple',
@@ -140,13 +153,13 @@ const FOOD_TRANSLATIONS: Record<string, string> = {
   'descremado': 'skim',
 };
 
-// Traducciones inglés-español para resultados
+// Diccionario inverso EN→ES para resultados
 const REVERSE_TRANSLATIONS: Record<string, string> = Object.entries(FOOD_TRANSLATIONS).reduce((acc, [es, en]) => {
   acc[en.toLowerCase()] = es;
   return acc;
 }, {} as Record<string, string>);
 
-// Categorización automática
+// Qué hace: categorización heurística rápida por palabras clave
 function categorizeFood(description: string): AdaptedUSDAFood['category'] {
   const desc = description.toLowerCase();
   
@@ -193,7 +206,7 @@ function categorizeFood(description: string): AdaptedUSDAFood['category'] {
   return 'other';
 }
 
-// Traducir de inglés a español (mejorado)
+// Qué hace: intenta traducir nombre inglés a español manteniendo capitalización
 function translateToSpanish(englishName: string): string {
   let translated = englishName.toLowerCase();
   
@@ -222,7 +235,7 @@ function translateToSpanish(englishName: string): string {
     .join(' ');
 }
 
-// Traducir de español a inglés para búsqueda
+// Qué hace: reemplaza palabras españolas por su equivalente inglés antes del fetch
 function translateToEnglish(spanishQuery: string): string {
   let translated = spanishQuery.toLowerCase();
   
@@ -234,13 +247,13 @@ function translateToEnglish(spanishQuery: string): string {
   return translated;
 }
 
-// Extraer valor de nutriente
+// Qué hace: obtiene valor numérico de nutriente por ID y redondea
 function getNutrientValue(nutrients: USDANutrient[], nutrientId: number): number {
   const nutrient = nutrients.find(n => n.nutrientId === nutrientId);
   return nutrient ? Math.round(nutrient.value * 10) / 10 : 0;
 }
 
-// Adaptar alimento de USDA a nuestro formato
+// Qué hace: transforma USDAFood → AdaptedUSDAFood (porción, macros, categoría, traducción)
 function adaptUSDAFood(usdaFood: USDAFood): AdaptedUSDAFood {
   const calories = getNutrientValue(usdaFood.foodNutrients, NUTRIENT_MAP.ENERGY);
   const protein = getNutrientValue(usdaFood.foodNutrients, NUTRIENT_MAP.PROTEIN);
@@ -281,7 +294,7 @@ function adaptUSDAFood(usdaFood: USDAFood): AdaptedUSDAFood {
   };
 }
 
-// Cache
+// Sección caché en memoria (Map) para búsquedas
 interface CacheItem {
   data: AdaptedUSDAFood[];
   timestamp: number;
@@ -290,6 +303,7 @@ interface CacheItem {
 const searchCache = new Map<string, CacheItem>();
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutos
 
+// Qué hace: devuelve resultados cache si vigentes (TTL 10 min)
 function getCachedSearch(query: string): AdaptedUSDAFood[] | null {
   const cached = searchCache.get(query.toLowerCase());
   if (!cached) return null;
@@ -336,7 +350,7 @@ export const usdaFoodService = {
       
       const url = `${USDA_BASE_URL}/foods/search?api_key=${USDA_API_KEY}&query=${encodeURIComponent(englishQuery)}&pageSize=${Math.min(limit, 50)}&dataType=Survey (FNDDS),Foundation,SR Legacy`;
       
-      const response = await fetch(url);
+  const response = await fetchWithRetry(url);
       
       if (!response.ok) {
         if (response.status === 403) {
@@ -362,8 +376,8 @@ export const usdaFoodService = {
       console.log(`✅ ${adaptedFoods.length} alimentos encontrados`);
       return adaptedFoods.slice(0, limit);
       
-    } catch (error) {
-      console.error('❌ Error USDA API:', error);
+      } catch (error) {
+        console.warn('⚠️ USDA API no disponible o error de red:', error);
       return [];
     }
   },
@@ -376,7 +390,7 @@ export const usdaFoodService = {
     
     try {
       const url = `${USDA_BASE_URL}/food/${fdcId}?api_key=${USDA_API_KEY}`;
-      const response = await fetch(url);
+  const response = await fetchWithRetry(url);
       
       if (!response.ok) return null;
       
