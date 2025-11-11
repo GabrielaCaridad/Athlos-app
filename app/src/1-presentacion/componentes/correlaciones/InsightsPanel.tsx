@@ -54,26 +54,26 @@ export default function InsightsPanel({ insights, loading, isDark, hideHeader }:
   // Estado vacío: CTA para incentivar registro (placeholder de acción)
   if (!insights || insights.length === 0) {
     return (
-      <div className={[
-        'p-6 rounded-xl border border-dashed shadow-md text-center',
-        isDark ? 'border-gray-700 bg-gray-900 shadow-black/30' : 'border-gray-300 bg-white shadow-black/5'
-      ].join(' ')}>
-        <div className={[
-          'mx-auto mb-3 w-10 h-10 flex items-center justify-center rounded-full',
-          isDark ? 'bg-blue-900/30 text-blue-300' : 'bg-blue-50 text-blue-600'
-        ].join(' ')}>
-          <Brain className="w-6 h-6" />
-        </div>
-        <h3 className={[
-          'text-lg font-semibold',
-          isDark ? 'text-gray-100' : 'text-gray-900'
-        ].join(' ')}>Aún no tenemos suficientes datos</h3>
-        <p className={[
-          'text-sm mt-1',
-          isDark ? 'text-gray-300' : 'text-gray-600'
-        ].join(' ')}>
-          Registra al menos 7 días con entrenamientos para ver tus patrones personales
-        </p>
+         <div className={[ 
+           'p-6 rounded-xl border border-dashed shadow-md text-center', 
+           isDark ? 'border-gray-700 bg-gray-900 shadow-black/30' : 'border-gray-300 bg-white shadow-black/5' 
+         ].join(' ')}>
+           <div className={[ 
+             'mx-auto mb-3 w-10 h-10 flex items-center justify-center rounded-full', 
+             isDark ? 'bg-blue-900/30 text-blue-300' : 'bg-blue-50 text-blue-600' 
+           ].join(' ')}>
+             <Brain className="w-6 h-6" />
+           </div>
+           <h3 className={[ 
+             'text-lg font-semibold text-center', 
+             isDark ? 'text-gray-100' : 'text-gray-900' 
+           ].join(' ')}>Aún no tenemos suficientes datos</h3>
+           <p className={[ 
+             'text-sm mt-1 text-center', 
+             isDark ? 'text-gray-300' : 'text-gray-600' 
+           ].join(' ')}>
+             Registra al menos 7 días con entrenamientos para ver tus patrones personales
+           </p>
         <div className="mt-4">
           <button
             type="button"

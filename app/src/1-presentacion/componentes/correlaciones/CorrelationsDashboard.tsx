@@ -11,23 +11,26 @@ import { TrendingUp, BarChart3 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import InsightsPanel from './InsightsPanel';
 import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
-import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs, addDoc } from 'firebase/firestore';
 import { db } from '../../../3-acceso-datos/firebase/config';
 import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
 import { formatDateYYYYMMDD } from '../../../utils/date';
 
 // Dataset diario unificado para gráficos e insights
 interface DailyPoint {
-  date: string; // YYYY-MM-DD (día local Chile)
+  date: string; // YYYY-MM-DD (día local)
   kcal: number;
   protein_g: number;
   carbs_g: number;
   fats_g: number;
   performance?: number; // promedio del día si hubo entrenos
+  energy?: number;      // energía percibida promedio (postEnergyLevel o preEnergyLevel)
+  durationSec?: number; // suma de duración de entrenos (segundos)
+  carbsPct?: number;    // % de calorías provenientes de carbohidratos
 }
 type FoodEntryLite = { date: string; calories?: number; protein?: number; carbs?: number; fats?: number };
-type WorkoutLite = { createdAt?: Timestamp; performanceScore?: number };
-type ScatterPoint = { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso' };
+type WorkoutLite = { createdAt?: Timestamp; performanceScore?: number; duration?: number; preEnergyLevel?: number; postEnergyLevel?: number };
+type ScatterPoint = { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso'; energy?: number; durationSec?: number };
 
 // Util local para claves de fecha (acepta string, Date o Timestamp)
 const dateKeyFrom = (v: string | Date | Timestamp | undefined | null): string => {
@@ -60,7 +63,17 @@ function pearson(xs: number[], ys: number[]): { r: number; n: number } {
 }
 
 // Insights derivados (sin IA) con evidencia y acción
-function generateDerivedInsights(daily: DailyPoint[], userWeightKg?: number): PersonalInsight[] {
+// Clasificación y frases de correlación
+function correlationLabel(absR: number): 'débil' | 'moderada' | 'fuerte' {
+  if (absR < 0.3) return 'débil';
+  if (absR < 0.6) return 'moderada';
+  return 'fuerte';
+}
+function correlationPhrase(r: number, n: number, xLabel: string, yLabel: string): string {
+  return `Correlación ${correlationLabel(Math.abs(r))} entre ${xLabel} y ${yLabel} (r=${r.toFixed(2)}, n=${n}, Pearson)`;
+}
+
+function generateDerivedInsights(daily: DailyPoint[], userWeightKg: number | undefined, rCalPerf: number): PersonalInsight[] {
   const insights: PersonalInsight[] = [];
   if (!daily || daily.length < 3) return insights;
   const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / (arr.length || 1);
@@ -87,16 +100,18 @@ function generateDerivedInsights(daily: DailyPoint[], userWeightKg?: number): Pe
       createdAt: new Date()
     });
   }
-  if (protTarget > 0 && avgP < protTarget * 0.85) {
+  const protDeficit = protTarget > 0 && avgP < protTarget * 0.85;
+  if (protDeficit) {
+    const deficitPct = protTarget > 0 ? ((protTarget - avgP) / protTarget) * 100 : 0;
     insights.push({
       id: 'ins_prot_baja', type: 'recommendation',
       title: '💪 Proteína por debajo del objetivo',
-      description: `Promedio ${Math.round(avgP)}g vs objetivo estimado ${Math.round(protTarget)}g (1.6 g/kg).`,
+      description: `Promedio ${Math.round(avgP)}g vs objetivo estimado ${Math.round(protTarget)}g (1.6 g/kg). Déficit ~${deficitPct.toFixed(0)}%.`,
       evidence: [
         `Peso usado: ${userWeightKg ?? 'N/D'} kg`,
         `Promedios (g): P ${Math.round(avgP)} / C ${Math.round(avgC)} / G ${Math.round(avgF)}`
       ],
-      actionable: 'Añade 1 porción más de proteína magra en comidas principales.',
+      actionable: deficitPct > 25 ? 'Añade 2 porciones de proteína magra repartidas (ej. claras + yogur + whey).' : 'Añade 1 porción más de proteína magra en comidas principales.',
       confidence: daily.length >= 7 ? 'high' : 'medium',
       createdAt: new Date()
     });
@@ -123,12 +138,46 @@ function generateDerivedInsights(daily: DailyPoint[], userWeightKg?: number): Pe
       evidence: [
         `Proteína ${Math.round(avgP)}g, Grasas ${Math.round(avgF)}g`
       ],
-      actionable: 'Incluye fuentes complejas (avena, arroz, papa) especialmente pre-entreno.',
+      actionable: 'Sincroniza carbohidratos complejos (avena, arroz, papa) 60–90 min antes de entrenar para mejorar energía.',
       confidence: daily.length >= 7 ? 'medium' : 'low',
       createdAt: new Date()
     });
   }
-  return insights.slice(0, 6);
+
+  if (rCalPerf > 0.4) {
+    insights.push({
+      id: 'ins_correlacion_cal_perf', type: 'pattern',
+      title: '⚙️ Rendimiento ligado a calorías',
+      description: 'En días con mayor ingesta calórica tu rendimiento tendió a mejorar.',
+      evidence: [
+        `r(calorías↔rendimiento) = ${rCalPerf.toFixed(2)}`,
+        `Promedio calorías: ${Math.round(avgK)} kcal`
+      ],
+      actionable: 'Mantén una ingesta estable cerca de tu rango objetivo en días de entrenamiento para sostener el rendimiento.',
+      confidence: rCalPerf > 0.6 ? 'high' : 'medium',
+      createdAt: new Date()
+    });
+  }
+
+  // Evita duplicar recomendación proteína por kg si ya está el insight anterior
+  if (userWeightKg && userWeightKg > 0 && !protDeficit) {
+    const perKg = avgP / userWeightKg;
+    if (perKg < 1.6) {
+      insights.push({
+        id: 'ins_prot_por_kg_baja', type: 'recommendation',
+        title: '🍗 Proteína por debajo de 1.6 g/kg',
+        description: `Tu promedio es ${perKg.toFixed(2)} g/kg. Un mínimo recomendado general es 1.6 g/kg.`,
+        evidence: [
+          `Peso estimado: ${userWeightKg} kg`,
+          `Proteína promedio: ${Math.round(avgP)} g/día`
+        ],
+        actionable: 'Añade una porción de 25–30 g de proteína (p.ej. 150 g de pechuga o 1 scoop de whey) en la comida principal.',
+        confidence: daily.length >= 7 ? 'high' : 'medium',
+        createdAt: new Date()
+      });
+    }
+  }
+  return insights.slice(0, 8);
 }
 
 // Tooltip informativo compacto
@@ -224,6 +273,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       workoutsCol,
       where('userId', '==', uid),
       where('createdAt', '>=', Timestamp.fromDate(startDate)),
+      where('createdAt', '<=', Timestamp.fromDate(endDate)),
       orderBy('createdAt', 'desc')
     );
     const unsub = onSnapshot(qWorkouts, snap => {
@@ -231,15 +281,17 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       setLoadingWorkouts(false);
     }, () => setLoadingWorkouts(false));
     return () => unsub();
-  }, [uid, startDate]);
+  }, [uid, startDate, endDate]);
 
   // Dataset diario
   const dailyPoints: DailyPoint[] = useMemo(() => {
     const map: Record<string, DailyPoint> = {};
+    // Inicializa todos los días del rango para evitar huecos (incluye días sin entreno ni comidas)
     for (let d = new Date(startDate); d <= endDate; d = new Date(d.getTime() + 86400000)) {
       const key = formatDateYYYYMMDD(d);
-      map[key] = { date: key, kcal: 0, protein_g: 0, carbs_g: 0, fats_g: 0 };
+      map[key] = { date: key, kcal: 0, protein_g: 0, carbs_g: 0, fats_g: 0, durationSec: 0 };
     }
+    // Agrega alimentos del rango
     rawFoods.forEach((f) => {
       const key = dateKeyFrom(f.date);
       const dp = map[key]; if (!dp) return;
@@ -248,41 +300,150 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       dp.carbs_g = clampMacro(dp.carbs_g + Number(f.carbs || 0));
       dp.fats_g = clampMacro(dp.fats_g + Number(f.fats || 0));
     });
+    // Agrega entrenamientos del rango (performance promedio, energía percibida, duración total)
     const byDayPerf: Record<string, number[]> = {};
+    const byDayEnergy: Record<string, number[]> = {};
     rawWorkouts.forEach((w) => {
       const ts: Timestamp | undefined = w.createdAt; if (!ts) return;
       const key = dateKeyFrom(ts);
-      if (!byDayPerf[key]) byDayPerf[key] = [];
+      const dp = map[key]; if (!dp) return;
       const score = Number(w.performanceScore || 0);
-      if (score > 0) byDayPerf[key].push(score);
+      if (score > 0) { if (!byDayPerf[key]) byDayPerf[key] = []; byDayPerf[key].push(score); }
+      const energyVal = typeof w.postEnergyLevel === 'number' ? w.postEnergyLevel : (typeof w.preEnergyLevel === 'number' ? w.preEnergyLevel : undefined);
+      if (Number.isFinite(energyVal)) { if (!byDayEnergy[key]) byDayEnergy[key] = []; byDayEnergy[key].push(energyVal as number); }
+      const dur = Number(w.duration || 0);
+      if (dur > 0) dp.durationSec = (dp.durationSec || 0) + dur;
     });
     Object.entries(byDayPerf).forEach(([k, arr]) => {
       if (map[k]) map[k].performance = Math.round(arr.reduce((s, v) => s + v, 0) / arr.length);
     });
-    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
+    Object.entries(byDayEnergy).forEach(([k, arr]) => {
+      if (map[k]) map[k].energy = Math.round(((arr.reduce((s, v) => s + v, 0) / arr.length) || 0) * 10) / 10;
+    });
+    // Calcula % carbohidratos sobre kcal
+    Object.values(map).forEach((dp) => {
+      if (dp.kcal > 0) {
+        const carbKcal = dp.carbs_g * 4;
+        dp.carbsPct = Math.round((carbKcal / dp.kcal) * 1000) / 10; // 1 decimal
+      }
+    });
+    const result = Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[Correlaciones] días:', result.length, 'foods:', rawFoods.length, 'workouts:', rawWorkouts.length);
+    }
+    return result;
   }, [rawFoods, rawWorkouts, startDate, endDate]);
 
   // Dispersión kcal vs performance (días con entreno)
-  const scatterData = useMemo<ScatterPoint[]>(() => dailyPoints.filter(d => (d.performance ?? 0) > 0).map(d => ({
-    date: d.date,
-    calories: d.kcal,
-    performance: d.performance!,
-    category: d.kcal < 1800 ? 'bajo' as const : d.kcal <= 2200 ? 'optimo' as const : 'exceso' as const
-  })), [dailyPoints]);
+    const scatterData = useMemo<ScatterPoint[]>(() => dailyPoints.filter(d => (d.performance ?? 0) > 0).map(d => ({
+      date: d.date,
+      calories: d.kcal,
+      performance: d.performance!,
+      category: d.kcal < 1800 ? 'bajo' as const : d.kcal <= 2200 ? 'optimo' as const : 'exceso' as const,
+      energy: d.energy,
+      durationSec: d.durationSec
+    })), [dailyPoints]);
 
+    // Correlaciones adaptativas (usadas en UI e insights contextuales)
+    const caloriesEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
+      dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.kcal),
+      dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.energy as number),
+      `${windowDays}d`
+    ), [dailyPoints, windowDays]);
+    const carbsPctPerfCorr = useMemo(() => computeAdaptiveCorrelation(
+      dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.carbsPct as number),
+      dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.performance as number),
+      `${windowDays}d`
+    ), [dailyPoints, windowDays]);
+    const durationEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
+      dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.durationSec as number),
+      dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.energy as number),
+      `${windowDays}d`
+    ), [dailyPoints, windowDays]);
   // Correlaciones
   const { r: rCalPerf, n: nCalPerf } = useMemo(() => pearson(scatterData.map(d => d.calories), scatterData.map(d => d.performance)), [scatterData]);
-  const { r: rProtPerf } = useMemo(() => pearson(scatterData.map(d => dailyPoints.find(p => p.date === d.date)?.protein_g || 0), scatterData.map(d => d.performance)), [scatterData, dailyPoints]);
 
   // Insights derivados
-  const derivedInsights = useMemo(() => generateDerivedInsights(dailyPoints, userWeightKg), [dailyPoints, userWeightKg]);
+  const derivedInsights = useMemo(() => generateDerivedInsights(dailyPoints, userWeightKg, rCalPerf), [dailyPoints, userWeightKg, rCalPerf]);
+
+  // Frases adaptativas (correlaciones nuevas)
+  const adaptivePhrase = (corr: { r: number; n: number; metodo: string; fuerza: string }, x: string, y: string) => {
+    if (corr.metodo === 'Insuficiente' || corr.n < 8) return `Correlación insuficiente entre ${x} y ${y} (n<8).`;
+    return `Relación ${corr.fuerza} (${corr.metodo}) ${x}↔${y} (r=${corr.r.toFixed(2)}, n=${corr.n})`;
+  };
+  const kcalPerfPhrase = useMemo(() => scatterData.length >= 2 ? correlationPhrase(rCalPerf, nCalPerf, 'calorías', 'rendimiento') : 'Correlación no disponible (n<2)', [rCalPerf, nCalPerf, scatterData.length]);
+  const caloriesEnergyPhrase = useMemo(() => adaptivePhrase(caloriesEnergyCorr, 'calorías', 'energía percibida'), [caloriesEnergyCorr]);
+  const carbsPerfPhrase = useMemo(() => adaptivePhrase(carbsPctPerfCorr, '% carbohidratos', 'rendimiento'), [carbsPctPerfCorr]);
+  const durationEnergyPhrase = useMemo(() => adaptivePhrase(durationEnergyCorr, 'duración entreno', 'energía percibida'), [durationEnergyCorr]);
+
+  // Insights derivados + correlaciones (enriquecidos por correlaciones adaptativas)
+  const correlationInsights = useMemo<PersonalInsight[]>(() => {
+    const arr: PersonalInsight[] = [];
+    const pushCorr = (id: string, corr: typeof caloriesEnergyCorr, title: string, desc: string, actionable: string) => {
+      if (corr.metodo === 'Insuficiente' || corr.n < 8) return;
+      arr.push({
+        id,
+        type: 'pattern',
+        title,
+        description: desc.replace('{R}', corr.r.toFixed(2)).replace('{M}', corr.metodo).replace('{N}', String(corr.n)),
+        evidence: [
+          `Método: ${corr.metodo}`,
+          `r=${corr.r.toFixed(2)} (fuerza ${corr.fuerza})`,
+          `n=${corr.n}`
+        ],
+        actionable,
+        confidence: corr.n >= 14 ? 'high' : 'medium',
+        createdAt: new Date()
+      });
+    };
+    if (caloriesEnergyCorr.r > 0.25) {
+      pushCorr('corr_cal_energy', caloriesEnergyCorr, '🔥 Ingesta y energía percibida', 'Mayor ingesta parece asociarse a mejor energía percibida (r={R}, {M}, n={N}).', 'Asegura calorías suficientes las horas previas al entreno para sostener energía.');
+    }
+    if (carbsPctPerfCorr.r > 0.3) {
+      pushCorr('corr_carbs_perf', carbsPctPerfCorr, '⚡ % Carbohidratos y rendimiento', 'Una mayor proporción de carbohidratos se asocia a mejor performance (r={R}, {M}, n={N}).', 'Sincroniza carbohidratos complejos 60–90 min antes de entrenar.');
+    }
+    if (durationEnergyCorr.r < -0.3) {
+      pushCorr('corr_dur_energy', durationEnergyCorr, '⏱️ Duración y caída de energía', 'Entrenos más largos se asocian a menor energía percibida post (r={R}, {M}, n={N}).', 'Evalúa distribución de intensidad o agrega intra-entreno ligero (electrolitos/carbohidratos).');
+    }
+    return arr.slice(0,3);
+  }, [caloriesEnergyCorr, carbsPctPerfCorr, durationEnergyCorr]);
+
+  const allInsights = useMemo(() => [...correlationInsights, ...derivedInsights].slice(0,12), [correlationInsights, derivedInsights]);
+
+  // Persistencia de insights locales + meta de correlaciones adaptativas
+  useEffect(() => {
+    const persistLocalInsights = async () => {
+      try {
+        if (!uid || !allInsights.length) return;
+        await addDoc(collection(db, 'userInsights'), {
+          userId: uid,
+            generatedAt: Timestamp.now(),
+            startDate: startYmd,
+            endDate: endYmd,
+            windowDays,
+            correlationMeta: {
+              caloriesEnergy: caloriesEnergyCorr,
+              carbsPctPerformance: carbsPctPerfCorr,
+              durationEnergy: durationEnergyCorr
+            },
+            insights: allInsights.map(i => ({
+              ...i,
+              createdAt: i.createdAt ? Timestamp.fromDate(i.createdAt) : Timestamp.now()
+            }))
+        });
+      } catch (e) {
+        console.warn('No se pudieron persistir los insights locales:', e);
+      }
+    };
+    void persistLocalInsights();
+  }, [uid, allInsights, startYmd, endYmd, windowDays, caloriesEnergyCorr, carbsPctPerfCorr, durationEnergyCorr]);
 
   const loading = (loadingFoods || loadingWorkouts) && dailyPoints.length === 0;
   // Aviso si pocos días -> usado para nota bajo el gráfico
   const showLimitedDataNotice = scatterData.length > 0 && scatterData.length < 7;
   const colorFor = (c: ScatterPoint['category']) => (c === 'optimo' ? '#10B981' : c === 'bajo' ? '#F59E0B' : '#EF4444');
 
-  const CustomScatterTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso' } }> }) => {
+  const CustomScatterTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso'; energy?: number; durationSec?: number } }> }) => {
     if (!active || !payload?.length) return null;
     const d = payload[0].payload;
     return (
@@ -291,6 +452,12 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
         <div>Calorías: <span className="font-medium">{Math.round(d.calories)} kcal</span></div>
         <div>Performance: <span className="font-medium">{Math.round(d.performance)}%</span></div>
         <div>Categoría: <span className="font-medium capitalize">{d.category}</span></div>
+        {Number.isFinite(d.energy) ? (
+          <div>Energía percibida: <span className="font-medium">{d.energy}</span></div>
+        ) : null}
+        {Number.isFinite(d.durationSec) ? (
+          <div>Duración entreno: <span className="font-medium">{Math.round((d.durationSec||0)/60)} min</span></div>
+        ) : null}
       </div>
     );
   };
@@ -325,7 +492,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
             ]}
           />
         </div>
-        <InsightsPanel insights={derivedInsights} loading={false} isDark={isDark} hideHeader />
+        <InsightsPanel insights={allInsights} loading={false} isDark={isDark} hideHeader />
       </section>
 
       {/* Selector de ventana y nota realtime */}
@@ -349,7 +516,12 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
                 <InfoTooltip
                   isDark={isDark}
                   title="¿Qué muestra este gráfico?"
-                  description="Cada punto es un día con entrenamiento; se relaciona ingesta calórica y rendimiento."
+                  description="Cada punto es un día con entrenamiento; se relaciona ingesta calórica y rendimiento. Abajo verás frases con método estadístico (Pearson o Spearman) según datos."
+                  bullets={[
+                    'Pearson: relaciona tendencias lineales y es sensible a outliers',
+                    'Spearman: usa rangos, capta relaciones monótonas y es robusto a outliers',
+                    'Si hay pocos días (n<8), la correlación se considera insuficiente'
+                  ]}
                   legend={[
                     { color: 'bg-yellow-500', label: 'Bajo (<1800 kcal)' },
                     { color: 'bg-green-500', label: 'Óptimo (1800-2200 kcal)' },
@@ -358,9 +530,11 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
                 />
               </div>
               {scatterData.length >= 2 && (
-                <div className="text-xs text-right">
-                  <div className={isDark? 'text-gray-300':'text-gray-600'}>r(kcal↔perf): <strong>{rCalPerf.toFixed(2)}</strong> (n={nCalPerf})</div>
-                  <div className={isDark? 'text-gray-400':'text-gray-500'}>r(prot↔perf): <strong>{rProtPerf.toFixed(2)}</strong></div>
+                <div className="text-xs text-right space-y-0.5">
+                  <div className={isDark? 'text-gray-300':'text-gray-600'}>{kcalPerfPhrase}</div>
+                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{caloriesEnergyPhrase}</div>
+                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{carbsPerfPhrase}</div>
+                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{durationEnergyPhrase}</div>
                 </div>
               )}
             </div>
@@ -414,7 +588,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
                   <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#E5E7EB'} />
                   <XAxis dataKey="date" stroke={isDark ? '#9CA3AF' : '#6B7280'} />
                   <YAxis stroke={isDark ? '#9CA3AF' : '#6B7280'} />
-                  <Tooltip />
+                  <Tooltip content={<CustomMacrosTooltip isDark={isDark} />} wrapperStyle={{ outline: 'none' }} />
                   <Legend />
                   <Bar dataKey="protein_g" name="Proteína (g)" fill="#3B82F6" />
                   <Bar dataKey="carbs_g" name="Carbohidratos (g)" fill="#8B5CF6" />
@@ -432,17 +606,91 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
           <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
             <div className="flex items-center gap-3 mb-4">
               <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Resumen Numérico</h3>
-              <InfoTooltip isDark={isDark} title="¿Cómo leer esto?" description={`Estadísticas de los últimos ${windowDays} días.`} />
+              <InfoTooltip
+                isDark={isDark}
+                title="¿Cómo leer esto?"
+                description={`Estadísticas de los últimos ${windowDays} días. El CV (coeficiente de variación) es la variabilidad relativa (desviación/promedio). Puede superar 100% si el promedio es bajo.`}
+              />
             </div>
             <ul className={isDark ? 'text-gray-300 space-y-1' : 'text-gray-700 space-y-1'}>
               <li>• Días en zona óptima: {dailyPoints.filter(d => d.kcal >= 1800 && d.kcal <= 2200).length}</li>
               <li>• Performance promedio (sólo días con entreno): {scatterData.length>0 ? Math.round(scatterData.reduce((s,d)=>s+d.performance,0)/scatterData.length) : 0}%</li>
               <li>• CV calorías: {(() => { const arr = dailyPoints.map(d=>d.kcal); const avg = arr.reduce((s,v)=>s+v,0)/(arr.length||1); const std = Math.sqrt(arr.reduce((s,v)=>s+(v-avg)**2,0)/(arr.length||1)); return avg>0 ? (std/avg*100).toFixed(1) : '0.0'; })()}%</li>
-              <li>• r(kcal↔perf): {scatterData.length>=2 ? rCalPerf.toFixed(2) : 'N/D'} {scatterData.length>=2 && (<span className="opacity-70">(n={nCalPerf})</span>)}</li>
+              <li>• {kcalPerfPhrase}</li>
+              <li>• {caloriesEnergyPhrase}</li>
+              <li>• {carbsPerfPhrase}</li>
+              <li>• {durationEnergyPhrase}</li>
             </ul>
           </div>
         </section>
       )}
     </div>
   );
+}
+
+// Tooltip personalizado para barras de macros
+function CustomMacrosTooltip({ active, payload, isDark }: { active?: boolean; payload?: Array<{ payload: DailyPoint }>; isDark: boolean }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className={`rounded-xl px-3 py-2 border text-xs shadow-sm ${isDark ? 'bg-gray-900/95 border-gray-800 text-gray-200' : 'bg-white/95 border-gray-200 text-gray-800'}`}>
+      <div className="font-semibold mb-1">{d.date}</div>
+      <div>Calorías: <span className="font-medium">{Math.round(d.kcal)} kcal</span></div>
+      {typeof d.performance === 'number' && (
+        <div>Performance: <span className="font-medium">{Math.round(d.performance)}%</span></div>
+      )}
+      {typeof d.carbsPct === 'number' && (
+        <div>% Carbohidratos: <span className="font-medium">{d.carbsPct.toFixed(1)}%</span></div>
+      )}
+      {typeof d.energy === 'number' && (
+        <div>Energía percibida: <span className="font-medium">{d.energy}</span></div>
+      )}
+      {typeof d.durationSec === 'number' && d.durationSec > 0 && (
+        <div>Duración entreno: <span className="font-medium">{Math.round(d.durationSec/60)} min</span></div>
+      )}
+      <div className="mt-1 grid grid-cols-3 gap-2">
+        <div>Proteína: <span className="font-medium">{Math.round(d.protein_g)} g</span></div>
+        <div>Carbos: <span className="font-medium">{Math.round(d.carbs_g)} g</span></div>
+        <div>Grasas: <span className="font-medium">{Math.round(d.fats_g)} g</span></div>
+      </div>
+    </div>
+  );
+}
+
+// Spearman rho (Pearson aplicado a rangos): menos sensible a outliers y detecta relaciones monótonas
+function spearman(xs: number[], ys: number[]): { r: number; n: number } {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return { r: 0, n };
+  const rank = (arr: number[]) => {
+    const ordered = arr.map((v,i)=>({v,i})).sort((a,b)=>a.v-b.v);
+    const ranks: number[] = new Array(arr.length);
+    let k=0;
+    while(k<ordered.length){
+      let j=k; while(j+1<ordered.length && ordered[j+1].v===ordered[k].v) j++;
+      const avg=(k+j+2)/2; for(let t=k;t<=j;t++){ ranks[ordered[t].i]=avg; }
+      k=j+1;
+    }
+    return ranks;
+  };
+  const rx = rank(xs); const ry = rank(ys);
+  const { r } = pearson(rx, ry);
+  return { r, n };
+}
+
+interface AdaptiveCorrelation { r: number; n: number; metodo: 'Pearson' | 'Spearman' | 'Insuficiente'; ventana: string; fuerza: 'débil' | 'moderada' | 'fuerte'; basePearson?: number; baseSpearman?: number }
+function computeAdaptiveCorrelation(xs: number[], ys: number[], ventana: string): AdaptiveCorrelation {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 8) return { r: 0, n, metodo: 'Insuficiente', ventana, fuerza: 'débil' };
+  const p = pearson(xs, ys).r;
+  const s = spearman(xs, ys).r;
+  let metodo: 'Pearson' | 'Spearman';
+  if (n >= 12) {
+    metodo = (Math.abs(p - s) > 0.15 && Math.abs(s) > Math.abs(p)) ? 'Spearman' : 'Pearson';
+  } else {
+    metodo = 'Spearman';
+  }
+  const r = metodo === 'Pearson' ? p : s;
+  const absR = Math.abs(r);
+  const fuerza: AdaptiveCorrelation['fuerza'] = absR < 0.2 ? 'débil' : absR < 0.4 ? 'moderada' : 'fuerte';
+  return { r, n, metodo, ventana, fuerza, basePearson: p, baseSpearman: s };
 }
