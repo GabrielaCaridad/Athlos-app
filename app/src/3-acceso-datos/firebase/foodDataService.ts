@@ -1,7 +1,7 @@
 // Servicio de alimentos (Firestore)
 // Propósito: manejar catálogo de alimentos y registros del usuario.
 // Colecciones: 'foodDatabase' (catálogo + registros de consumo unificados).
-// Formato de fecha: YYYY-MM-DD en UTC (clave para consultas por día).
+// Formato de fecha: YYYY-MM-DD LOCAL (clave para consultas por día).
 // Índices: userId+date(+createdAt desc) y rangos por date para estadísticas.
 import { 
   collection, 
@@ -23,6 +23,7 @@ import {
   DocumentData
 } from 'firebase/firestore';
 import { db } from './config';
+import { normalizeToLocalDateKey } from '../../utils/date';
 
 // Utilidades
 // Qué hace: quita undefined/null antes de escribir en Firestore.
@@ -326,15 +327,8 @@ export const userFoodService = {
     mealType?: UserFoodEntry['mealType']
   ): Promise<string> {
     try {
-      // Qué hace: normaliza fecha → clave YYYY-MM-DD UTC
-      const normalizeDateUtc = (raw?: string): string => {
-        if (raw) {
-          const d = new Date(raw);
-          if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
-        }
-        return new Date().toISOString().slice(0,10);
-      };
-      const ymdUtc = normalizeDateUtc(date);
+      // Normaliza fecha de entrada a clave local YYYY-MM-DD
+      const ymdLocal = normalizeToLocalDateKey(date);
 
       const databaseFoodId = await foodDatabaseService.addToDatabase(foodData, userId);
 
@@ -342,11 +336,11 @@ export const userFoodService = {
         userId,
         databaseFoodId,
         name: foodData.name,
-        calories: foodData.calories * quantity,
-  serving: foodData.serving,
+    calories: foodData.calories * quantity,
+    serving: foodData.serving,
         quantity,
-  // Normalización para backend (chat) - siempre YYYY-MM-DD UTC
-  date: ymdUtc,
+    // Clave local de fecha (YYYY-MM-DD)
+    date: ymdLocal,
         mealType,
         protein: typeof foodData.protein === 'number' ? foodData.protein * quantity : undefined,
         carbs: typeof foodData.carbs === 'number' ? foodData.carbs * quantity : undefined,
@@ -358,7 +352,7 @@ export const userFoodService = {
       const cleanEntry = removeUndefinedFields(rawEntry);
       // Log diagnóstico (solo dev) para verificar escritura diaria en foodDatabase
       if (typeof console !== 'undefined') {
-        console.log('[addFood] wrote', { userId, date: ymdUtc, createdAt: rawEntry.createdAt });
+        console.log('[addFood] wrote', { userId, date: ymdLocal, createdAt: rawEntry.createdAt });
       }
 
   // (Limpieza) Reemplacé 'userFoodEntries' por 'foodDatabase'.
@@ -424,11 +418,12 @@ export const userFoodService = {
    * Si Firestore exige un índice compuesto y no está creado, hago un fallback en cliente.
    */
   async getUserFoodsByDate(userId: string, date: string): Promise<UserFoodEntry[]> {
+    const dateKey = normalizeToLocalDateKey(date);
     try {
       const q = query(
   collection(db, 'foodDatabase'),
         where('userId', '==', userId),
-        where('date', '==', date),
+        where('date', '==', dateKey),
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
@@ -443,7 +438,7 @@ export const userFoodService = {
   const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
-        return all.filter(f => f.date === date).sort((a, b) => {
+        return all.filter(f => f.date === dateKey).sort((a, b) => {
           const ta = (a.createdAt as Timestamp)?.toMillis?.() || 0;
           const tb = (b.createdAt as Timestamp)?.toMillis?.() || 0;
           return tb - ta;
@@ -462,11 +457,12 @@ export const userFoodService = {
     date: string, 
     mealType: UserFoodEntry['mealType']
   ): Promise<UserFoodEntry[]> {
+    const dateKey = normalizeToLocalDateKey(date);
     try {
       const q = query(
   collection(db, 'foodDatabase'),
         where('userId', '==', userId),
-        where('date', '==', date),
+        where('date', '==', dateKey),
         where('mealType', '==', mealType),
         orderBy('createdAt', 'desc')
       );
@@ -482,7 +478,7 @@ export const userFoodService = {
   const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => ({ id: d.id, ...d.data() })) as UserFoodEntry[];
-        return all.filter(f => f.date === date && f.mealType === mealType).sort((a, b) => {
+        return all.filter(f => f.date === dateKey && f.mealType === mealType).sort((a, b) => {
           const ta = (a.createdAt as Timestamp)?.toMillis?.() || 0;
           const tb = (b.createdAt as Timestamp)?.toMillis?.() || 0;
           return tb - ta;
@@ -540,19 +536,21 @@ export const userFoodService = {
     averageDaily: number;
     topFoods: Array<{ name: string; count: number; calories: number }>;
   }> {
+    const startKey = normalizeToLocalDateKey(startDate);
+    const endKey = normalizeToLocalDateKey(endDate);
     try {
       const q = query(
   collection(db, 'foodDatabase'),
         where('userId', '==', userId),
-        where('date', '>=', startDate),
-        where('date', '<=', endDate),
+        where('date', '>=', startKey),
+        where('date', '<=', endKey),
         orderBy('date', 'desc')
       );
       const querySnapshot = await getDocs(q);
       const entries = querySnapshot.docs.map(doc => doc.data()) as UserFoodEntry[];
       
       const totalCalories = entries.reduce((sum, entry) => sum + entry.calories, 0);
-      const days = Math.max(1, Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1);
+      const days = Math.max(1, Math.ceil((new Date(endKey).getTime() - new Date(startKey).getTime()) / (1000 * 60 * 60 * 24)) + 1);
       
       const foodCounts = entries.reduce((acc, entry) => {
         if (!acc[entry.name]) {
@@ -583,10 +581,10 @@ export const userFoodService = {
   const q2 = query(collection(db, 'foodDatabase'), where('userId', '==', userId));
         const qs2 = await getDocs(q2);
         const all = qs2.docs.map(d => d.data()) as UserFoodEntry[];
-        const entries = all.filter(e => e.date >= startDate && e.date <= endDate).sort((a, b) => (b.date > a.date ? 1 : -1));
+    const entries = all.filter(e => e.date >= startKey && e.date <= endKey).sort((a, b) => (b.date > a.date ? 1 : -1));
 
         const totalCalories = entries.reduce((sum, entry) => sum + entry.calories, 0);
-        const days = Math.max(1, Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    const days = Math.max(1, Math.ceil((new Date(endKey).getTime() - new Date(startKey).getTime()) / (1000 * 60 * 60 * 24)) + 1);
         const foodCounts = entries.reduce((acc, entry) => {
           if (!acc[entry.name]) {
             acc[entry.name] = { count: 0, calories: 0 };

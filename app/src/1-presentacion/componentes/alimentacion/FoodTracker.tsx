@@ -10,10 +10,9 @@ import {
   DatabaseFood, 
   UserFoodEntry 
 } from '../../../2-logica-negocio/servicios/foodDataService';
-import { foodService } from '../../../3-acceso-datos/firebase/firestoreService'; // (Limpieza) helper UTC
 import { usdaFoodService, AdaptedUSDAFood } from '../../../3-acceso-datos/apis-externas/usdaFoodAPI';
 import { useToast } from '../../componentes/comun/ToastProvider'; // Toasts del host global
-import { formatDateYYYYMMDD } from '../../../utils/date'; // Util para normalizar fecha de hoy en UTC
+import { formatDateYYYYMMDD, getTodayLocalDateKey, normalizeToLocalDateKey } from '../../../utils/date'; // Fechas locales
 
 interface FoodTrackerProps {
   isDark: boolean;
@@ -43,7 +42,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const [userFoods, setUserFoods] = useState<UserFoodEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   // Ojo: clave de fecha normalizada YYYY-MM-DD en UTC (consistencia con backend/chat)
-  const [selectedDate, setSelectedDate] = useState(foodService.toUTCDateKey(new Date()));
+  const [selectedDate, setSelectedDate] = useState(getTodayLocalDateKey());
   const [expandedMeals, setExpandedMeals] = useState<Record<MealType, boolean>>({
     breakfast: true,
     lunch: true,
@@ -113,6 +112,14 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   
 
   // Efecto: carga alimentos del día y hace prefetch semanal para KPIs
+  // Garantiza que la fecha seleccionada nunca se adelante a hoy (por cambios de TZ o manipulación)
+  useEffect(() => {
+    const today = getTodayLocalDateKey();
+    if (selectedDate > today) {
+      setSelectedDate(today);
+    }
+  }, [selectedDate]);
+
   useEffect(() => {
     const loadData = async () => {
       if (!user) {
@@ -120,11 +127,14 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         return;
       }
       try {
-        // Cálculo local de límites para prefetch semanal (Dom-Dom simple por 7 días atrás)
-        const today = formatDateYYYYMMDD(new Date());
-        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        // Cálculo local (hora del dispositivo) de límites para prefetch semanal usando helpers
+        const today = getTodayLocalDateKey();
+        const weekAgoDate = new Date();
+        weekAgoDate.setDate(weekAgoDate.getDate() - 7);
+        const weekAgo = formatDateYYYYMMDD(weekAgoDate);
         // Índice requerido: foodDatabase(userId ASC, date ASC, createdAt DESC)
-        const foods = await userFoodService.getUserFoodsByDate(user.uid, selectedDate);
+        const normalizedSelected = normalizeToLocalDateKey(selectedDate);
+        const foods = await userFoodService.getUserFoodsByDate(user.uid, normalizedSelected);
         setUserFoods(foods);
         setLoadError(null);
         // Prefetch semanal silencioso (no usado directamente aquí)

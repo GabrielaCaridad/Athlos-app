@@ -14,6 +14,7 @@ import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correl
 import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../../../3-acceso-datos/firebase/config';
 import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
+import { formatDateYYYYMMDD } from '../../../utils/date';
 
 // Dataset diario unificado para gráficos e insights
 interface DailyPoint {
@@ -28,10 +29,18 @@ type FoodEntryLite = { date: string; calories?: number; protein?: number; carbs?
 type WorkoutLite = { createdAt?: Timestamp; performanceScore?: number };
 type ScatterPoint = { date: string; calories: number; performance: number; category: 'bajo' | 'optimo' | 'exceso' };
 
-// Helper TZ Chile (UTC-3) – para eje X consistente local
-const toChileDateKey = (d: Date): string => {
-  const local = new Date(d.getTime() - (3 * 60 * 60 * 1000)); // ajuste simple UTC-3
-  return local.toISOString().slice(0, 10);
+// Util local para claves de fecha (acepta string, Date o Timestamp)
+const dateKeyFrom = (v: string | Date | Timestamp | undefined | null): string => {
+  if (!v) return '';
+  if (typeof v === 'string') return v;
+  if (v instanceof Date) return formatDateYYYYMMDD(v);
+  if (typeof v.toDate === 'function') return formatDateYYYYMMDD(v.toDate());
+  try {
+    // último intento si llega algo extraño
+    return formatDateYYYYMMDD(new Date(String(v)));
+  } catch {
+    return '';
+  }
 };
 
 // Sanitización y límites
@@ -176,8 +185,8 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     const start = new Date(end.getTime() - (windowDays - 1) * 24 * 60 * 60 * 1000);
     return { startDate: start, endDate: end };
   }, [windowDays]);
-  const startYmd = startDate.toISOString().slice(0, 10);
-  const endYmd = endDate.toISOString().slice(0, 10);
+  const startYmd = formatDateYYYYMMDD(startDate);
+  const endYmd = formatDateYYYYMMDD(endDate);
 
   // Snapshot alimentos
   useEffect(() => {
@@ -228,11 +237,11 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   const dailyPoints: DailyPoint[] = useMemo(() => {
     const map: Record<string, DailyPoint> = {};
     for (let d = new Date(startDate); d <= endDate; d = new Date(d.getTime() + 86400000)) {
-      const key = toChileDateKey(d);
+      const key = formatDateYYYYMMDD(d);
       map[key] = { date: key, kcal: 0, protein_g: 0, carbs_g: 0, fats_g: 0 };
     }
-  rawFoods.forEach((f) => {
-      const key = toChileDateKey(new Date(f.date + 'T00:00:00Z'));
+    rawFoods.forEach((f) => {
+      const key = dateKeyFrom(f.date);
       const dp = map[key]; if (!dp) return;
       dp.kcal = clampCalories(dp.kcal + Number(f.calories || 0));
       dp.protein_g = clampMacro(dp.protein_g + Number(f.protein || 0));
@@ -240,9 +249,9 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       dp.fats_g = clampMacro(dp.fats_g + Number(f.fats || 0));
     });
     const byDayPerf: Record<string, number[]> = {};
-  rawWorkouts.forEach((w) => {
+    rawWorkouts.forEach((w) => {
       const ts: Timestamp | undefined = w.createdAt; if (!ts) return;
-      const key = toChileDateKey(ts.toDate());
+      const key = dateKeyFrom(ts);
       if (!byDayPerf[key]) byDayPerf[key] = [];
       const score = Number(w.performanceScore || 0);
       if (score > 0) byDayPerf[key].push(score);

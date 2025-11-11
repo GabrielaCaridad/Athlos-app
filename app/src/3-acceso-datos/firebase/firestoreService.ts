@@ -1,6 +1,6 @@
 // Propósito: capa central de acceso a Firestore (perfiles, alimentos unificados, workouts, plantillas)
 // Contexto: colecciones usadas -> users, foodDatabase (antes foods/userFoodEntries), workouts, workout_templates.
-//           claves de fecha alimentos: YYYY-MM-DD UTC; workouts usan createdAt/completedAt Timestamp.
+//           claves de fecha de alimentos: YYYY-MM-DD LOCAL; workouts usan createdAt/completedAt Timestamp.
 //           índices típicos: foodDatabase(userId+date+createdAt DESC), workouts(userId+createdAt DESC),
 //           workouts(userId+completedAt DESC) para listados finalizados.
 // Nota: solo se añaden comentarios; lógica intacta.
@@ -16,6 +16,7 @@ import {
   where,
   Timestamp
 } from 'firebase/firestore';
+import { normalizeToLocalDateKey, getTodayLocalDateKey } from '../../utils/date';
 import { db } from './config';
 import { calculateAge as calcAgeUtil } from '../../utils/date';
 
@@ -317,12 +318,13 @@ interface CreateFoodData {
 export const foodService = {
   // (Limpieza) Migré toda la persistencia de alimentos a 'foodDatabase'.
   // Mantengo esta API para no romper la UI.
+  // Clave de fecha local (YYYY-MM-DD) – reemplaza uso previo UTC
+  toLocalDateKey(d: Date): string {
+    return normalizeToLocalDateKey(d);
+  },
+  // Compat alias: mantener llamadas antiguas pero devolviendo clave LOCAL
   toUTCDateKey(d: Date): string {
-    // Normalizo la fecha a UTC (YYYY-MM-DD) para que el backend y el chat la entiendan igual.
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return normalizeToLocalDateKey(d);
   },
   /* Agregar un nuevo alimento */
   async addFood(userId: string, foodData: CreateFoodData): Promise<string> {
@@ -330,7 +332,7 @@ export const foodService = {
       // Qué hace: crea entrada en 'foodDatabase' usando clave de fecha UTC YYYY-MM-DD.
       // Por qué: mantener consistencia con backend/chat y evitar desfases por zona horaria.
       // Colección: foodDatabase.
-      const dateKey = this.toUTCDateKey(new Date()); // (Limpieza) clave de hoy en UTC
+  const dateKey = getTodayLocalDateKey(); // clave local de hoy YYYY-MM-DD
       const createdAt = Timestamp.now();
       const docRef = await addDoc(collection(db, 'foodDatabase'), {
         userId,
@@ -359,7 +361,7 @@ export const foodService = {
       const q = query(
         collection(db, 'foodDatabase'),
         where('userId', '==', userId),
-        where('date', '==', date),
+        where('date', '==', normalizeToLocalDateKey(date)),
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);

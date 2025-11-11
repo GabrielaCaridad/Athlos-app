@@ -11,6 +11,7 @@
 import type { WorkoutSession } from '../../3-acceso-datos/firebase/firestoreService';
 import type { UserFoodEntry } from '../../3-acceso-datos/firebase/foodDataService';
 import { aggregateMacros } from '../../utils/nutrition';
+import { formatDateYYYYMMDD } from '../../utils/date';
 
 export type CalorieCategory = 'bajo' | 'optimo' | 'exceso';
 
@@ -31,7 +32,7 @@ const categorizeCalories = (cal: number): CalorieCategory => (cal < 1800 ? 'bajo
 function getWorkoutDateString(w: WorkoutSession): string | null {
   const when = (w.completedAt?.toDate?.() as Date | undefined) || (w.createdAt?.toDate?.() as Date | undefined);
   if (!when) return null;
-  return when.toISOString().slice(0, 10);
+  return formatDateYYYYMMDD(when);
 }
 
 export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFoodEntry[], days: number = 14): CorrelationDataPoint[] {
@@ -63,7 +64,7 @@ export function buildCorrelationData(workouts: WorkoutSession[], foods: UserFood
   const result: CorrelationDataPoint[] = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(start.getTime() - i * dayMs);
-    const dateStr = d.toISOString().slice(0, 10);
+    const dateStr = formatDateYYYYMMDD(d);
     const dayWorkouts = workoutsByDate.get(dateStr) || [];
     if (dayWorkouts.length === 0) continue; // Solo días con workouts para correlación
 

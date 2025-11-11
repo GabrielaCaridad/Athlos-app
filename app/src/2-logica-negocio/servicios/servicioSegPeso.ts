@@ -8,6 +8,7 @@
 import { collection, getDocs, query, where, orderBy, limit, addDoc, updateDoc, doc, Timestamp } from 'firebase/firestore';
 import { db } from '../../3-acceso-datos/firebase/config';
 import { userService } from '../../3-acceso-datos/firebase/firestoreService';
+import { formatDateYYYYMMDD } from '../../utils/date';
 
 export interface RegistroPeso {
   id?: string;
@@ -27,7 +28,7 @@ export interface TendenciaPeso {
 }
 
 function todayStr(): string {
-  return new Date().toISOString().split('T')[0];
+  return formatDateYYYYMMDD(new Date());
 }
 
 // Asegura que un número quede dentro de [min, max]
@@ -37,7 +38,7 @@ function clamp(n: number, min: number, max: number) { return Math.max(min, Math.
 function daysAgoStr(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().split('T')[0];
+  return formatDateYYYYMMDD(d);
 }
 
 // Obtiene el último registro de peso del usuario en o antes de cierta fecha

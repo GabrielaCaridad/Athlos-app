@@ -3,7 +3,7 @@
 //           foodDatabase(userId+date DESC) y workouts(userId+createdAt DESC).
 // Qué hace: deriva métricas locales (calorías hoy, entrenos últimos 7 días, energía media) en efectos.
 // Por qué: evitar cálculos pesados en render y mantener reactivo sin reconsultas manuales.
-// Ojo: normaliza 'hoy' con foodService.toUTCDateKey para coherencia con backend/chat.
+// Ojo: normaliza 'hoy' con claves locales YYYY-MM-DD para coherencia en frontend/servicios.
 // Nota: timestamps Firestore pueden venir como Date o Timestamp; se unifican antes de comparar.
 import { useEffect, useState } from 'react';
 import { Utensils, Dumbbell, Zap, Brain, TrendingUp } from 'lucide-react';
@@ -11,7 +11,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { usePersonalInsights } from '../../hooks/usePersonalInsights';
 // Nota: datos centralizados vía useUserData; no se consumen servicios directos aquí.
 import { useUserData } from '../../hooks/useUserData';
-import { foodService } from '../../../3-acceso-datos/firebase/firestoreService'; // (Limpieza) helper fecha UTC
+import { getTodayLocalDateKey } from '../../../utils/date';
 import { Link, useNavigate } from 'react-router-dom';
 import { userService } from '../../../2-logica-negocio/servicios';
 import { getLatestUnreadProactive, markProactiveAsRead, ProactiveMessage } from '../../../2-logica-negocio/servicios';
@@ -85,8 +85,8 @@ export default function Dashboard({ isDark }: DashboardProps) {
     // Derivar métricas locales cuando los datos cambian (en tiempo real)
     try {
       setLoading(true);
-  // 1) Hoy: clave UTC consistente con foodDatabase
-  const todayStr = foodService.toUTCDateKey(new Date()); // Normalización fecha → YYYY-MM-DD UTC
+  // 1) Hoy: clave LOCAL consistente con foodDatabase
+  const todayStr = getTodayLocalDateKey();
       // Log diagnóstico dev antes de calcular métricas
       // Nota(dev): log de diagnóstico solo para verificar fechas guardadas
       console.log(

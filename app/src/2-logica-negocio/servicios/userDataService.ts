@@ -22,6 +22,7 @@ import { collection, onSnapshot, orderBy, query, where, Timestamp, Unsubscribe }
 import { db } from '../../3-acceso-datos/firebase/config';
 import type { WorkoutSession } from '../../3-acceso-datos/firebase/firestoreService';
 import type { UserFoodEntry } from '../../3-acceso-datos/firebase/foodDataService';
+import { formatDateYYYYMMDD } from '../../utils/date';
 
 export type UserData = {
   workouts: WorkoutSession[];
@@ -31,12 +32,13 @@ export type UserData = {
 export function subscribeUserData(userId: string, days: number, cb: (data: UserData) => void): Unsubscribe {
   // Ventana móvil desde medianoche local de hoy hacia atrás N días
   // Nota: se usa medianoche local para workouts y claves UTC ISO para foods.
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  start.setDate(start.getDate() - Math.max(1, days));
-  const startTs = Timestamp.fromDate(start);
-  const fromStr = start.toISOString().slice(0, 10);
-  const toStr = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startBoundary = new Date(todayMidnight);
+  startBoundary.setDate(startBoundary.getDate() - Math.max(1, days));
+  const startTs = Timestamp.fromDate(startBoundary);
+  const fromStr = formatDateYYYYMMDD(startBoundary);
+  const toStr = formatDateYYYYMMDD(todayMidnight);
 
   let workouts: WorkoutSession[] = [];
   let foods: UserFoodEntry[] = [];
