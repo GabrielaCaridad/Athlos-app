@@ -287,7 +287,7 @@ export class CorrelationInsightsService {
 
       // Recuperar TODO el rango en 2 queries (foods, workouts) y agrupar por fecha
       const foodsQ = query(
-        collection(db, 'userFoodEntries'),
+        collection(db, 'foodDatabase'),
         where('userId', '==', userId),
         where('date', '>=', startDateStr),
         where('date', '<=', endDateStr)

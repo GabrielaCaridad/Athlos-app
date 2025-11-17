@@ -6,12 +6,13 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, BarChart, Bar, Legend, Cell } from 'recharts';
-// Importación de íconos (removido AlertCircle que no se utilizaba)
+
 import { TrendingUp, BarChart3 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import InsightsPanel from './InsightsPanel';
 import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
-import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs, doc, setDoc } from 'firebase/firestore';
+
 import { db } from '../../../3-acceso-datos/firebase/config';
 import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
 import { formatDateYYYYMMDD } from '../../../utils/date';
@@ -412,30 +413,41 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
 
   // Persistencia de insights locales + meta de correlaciones adaptativas
   useEffect(() => {
-    const persistLocalInsights = async () => {
-      try {
-        if (!uid || !allInsights.length) return;
-        await addDoc(collection(db, 'userInsights'), {
-          userId: uid,
-            generatedAt: Timestamp.now(),
-            startDate: startYmd,
-            endDate: endYmd,
-            windowDays,
-            correlationMeta: {
-              caloriesEnergy: caloriesEnergyCorr,
-              carbsPctPerformance: carbsPctPerfCorr,
-              durationEnergy: durationEnergyCorr
-            },
-            insights: allInsights.map(i => ({
-              ...i,
-              createdAt: i.createdAt ? Timestamp.fromDate(i.createdAt) : Timestamp.now()
-            }))
-        });
-      } catch (e) {
-        console.warn('No se pudieron persistir los insights locales:', e);
-      }
-    };
-    void persistLocalInsights();
+   const persistLocalInsights = async () => {
+  try {
+    if (!uid || !allInsights.length) return;
+
+    const insightsRef = doc(db, 'user_insights', uid);
+
+    await setDoc(
+      insightsRef,
+      {
+        userId: uid,
+        generatedAt: Timestamp.now(),
+        startDate: startYmd,
+        endDate: endYmd,
+        windowDays,
+        correlationMeta: {
+          caloriesEnergy: caloriesEnergyCorr,
+          carbsPctPerformance: carbsPctPerfCorr,
+          durationEnergy: durationEnergyCorr,
+        },
+        insights: allInsights.map((i) => ({
+          ...i,
+          createdAt: i.createdAt
+            ? Timestamp.fromDate(i.createdAt)
+            : Timestamp.now(),
+        })),
+      },
+      { merge: true } // para no pisar otros campos que ya tenga el doc
+    );
+  } catch (e) {
+    console.warn('No se pudieron persistir los insights locales:', e);
+  }
+};
+
+void persistLocalInsights();
+
   }, [uid, allInsights, startYmd, endYmd, windowDays, caloriesEnergyCorr, carbsPctPerfCorr, durationEnergyCorr]);
 
   const loading = (loadingFoods || loadingWorkouts) && dailyPoints.length === 0;
