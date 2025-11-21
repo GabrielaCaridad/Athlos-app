@@ -10,7 +10,7 @@ import { useState, useEffect } from 'react';
 import { Timestamp } from 'firebase/firestore';
 import { useAuth } from '../../hooks/useAuth';
 import { UserProfile } from '../../../3-acceso-datos/firebase/firestoreService';
-import { userService, autoRegistroDesdeConfiguracion } from '../../../2-logica-negocio/servicios';
+import { userService } from '../../../2-logica-negocio/servicios';
 
 interface Props { isDark: boolean }
 
@@ -144,17 +144,8 @@ export default function ConfiguracionPage({ isDark }: Props) {
       setSaving(true);
       setSuccessMessage('');
       
-  // Persistencia principal del perfil
+      // Persistencia principal del perfil
       await userService.updateUserProfile(user.uid, profile);
-
-  // Auto-registro: si el peso es razonable se guarda como entrada para historial.
-      if (typeof profile.currentWeight === 'number' && profile.currentWeight >= 30 && profile.currentWeight <= 300) {
-        try {
-          await autoRegistroDesdeConfiguracion(user.uid, profile.currentWeight);
-        } catch (e) {
-          console.warn('No se pudo auto-registrar el peso desde Configuración:', e);
-        }
-      }
 
   // Sincroniza displayName en Auth para reflejarlo fuera del perfil.
       if (profile.displayName && profile.displayName !== (user.displayName || '')) {

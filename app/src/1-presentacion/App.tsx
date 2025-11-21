@@ -7,8 +7,6 @@ import { useState } from 'react';
 import { Home, Utensils, Dumbbell,Menu, X, TrendingUp } from 'lucide-react';
 import { Routes, Route, useLocation, Navigate, NavLink } from 'react-router-dom';
 import CorrelationsDashboard from './componentes/correlaciones/CorrelationsDashboard';
-
-import PanelProgreso from './componentes/progreso/PanelProgreso';
 import { useAuth } from './hooks/useAuth';
 import AuthForm from './componentes/auth/AuthForm';       
 import LoadingScreen from './componentes/auth/LoadingScreen';
@@ -35,7 +33,6 @@ function App() {
   const navigation = [
     { path: '/dashboard', name: 'Dashboard', icon: Home },
     { path: '/food', name: 'Alimentación', icon: Utensils },
-    { path: '/progreso', name: 'Mi Progreso', icon: TrendingUp },
     { path: '/correlations', name: 'Correlaciones', icon: TrendingUp },
     { path: '/workouts', name: 'Entrenamientos', icon: Dumbbell },
  
@@ -151,7 +148,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" />} />
                 <Route path="/dashboard" element={<Dashboard isDark={isDark} />} />
-                <Route path="/progreso" element={<PanelProgreso isDark={isDark} />} />
+                
                 <Route path="/correlations" element={<CorrelationsDashboard isDark={isDark} />} />
                 <Route path="/food" element={<FoodTracker isDark={isDark} />} />
                 <Route path="/workouts" element={<WorkoutTracker isDark={isDark} />} />

@@ -6,13 +6,12 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, BarChart, Bar, Legend, Cell } from 'recharts';
-
+// Importación de íconos (removido AlertCircle que no se utilizaba)
 import { TrendingUp, BarChart3 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import InsightsPanel from './InsightsPanel';
 import type { PersonalInsight } from '../../../2-logica-negocio/servicios/correlationInsightsService';
-import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs, doc, setDoc } from 'firebase/firestore';
-
+import { collection, onSnapshot, query, where, Timestamp, orderBy, getDocs, addDoc } from 'firebase/firestore';
 import { db } from '../../../3-acceso-datos/firebase/config';
 import { userService } from '../../../3-acceso-datos/firebase/firestoreService';
 import { formatDateYYYYMMDD } from '../../../utils/date';
@@ -121,7 +120,7 @@ function generateDerivedInsights(daily: DailyPoint[], userWeightKg: number | und
     insights.push({
       id: 'ins_var_cal', type: 'pattern',
       title: '🔄 Alta variabilidad de calorías',
-      description: `Tu ingesta fluctúa (CV ${cvK.toFixed(1)}%). La consistencia favorece rendimiento.`,
+      description: `Tu ingesta fluctúa (${cvK.toFixed(1)}%). La consistencia favorece rendimiento.`,
       evidence: [
         `Promedio: ${Math.round(avgK)} kcal`,
         `Desviación: ${Math.round(stdK)} kcal`,
@@ -151,7 +150,6 @@ function generateDerivedInsights(daily: DailyPoint[], userWeightKg: number | und
       title: '⚙️ Rendimiento ligado a calorías',
       description: 'En días con mayor ingesta calórica tu rendimiento tendió a mejorar.',
       evidence: [
-        `r(calorías↔rendimiento) = ${rCalPerf.toFixed(2)}`,
         `Promedio calorías: ${Math.round(avgK)} kcal`
       ],
       actionable: 'Mantén una ingesta estable cerca de tu rango objetivo en días de entrenamiento para sostener el rendimiento.',
@@ -369,7 +367,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
 
   // Frases adaptativas (correlaciones nuevas)
   const adaptivePhrase = (corr: { r: number; n: number; metodo: string; fuerza: string }, x: string, y: string) => {
-    if (corr.metodo === 'Insuficiente' || corr.n < 8) return `Correlación insuficiente entre ${x} y ${y} (n<8).`;
+    if (corr.metodo === 'Insuficiente' || corr.n < 5) return `Correlación insuficiente entre ${x} y ${y} (n<8).`;
     return `Relación ${corr.fuerza} (${corr.metodo}) ${x}↔${y} (r=${corr.r.toFixed(2)}, n=${corr.n})`;
   };
   const kcalPerfPhrase = useMemo(() => scatterData.length >= 2 ? correlationPhrase(rCalPerf, nCalPerf, 'calorías', 'rendimiento') : 'Correlación no disponible (n<2)', [rCalPerf, nCalPerf, scatterData.length]);
@@ -381,7 +379,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   const correlationInsights = useMemo<PersonalInsight[]>(() => {
     const arr: PersonalInsight[] = [];
     const pushCorr = (id: string, corr: typeof caloriesEnergyCorr, title: string, desc: string, actionable: string) => {
-      if (corr.metodo === 'Insuficiente' || corr.n < 8) return;
+      if (corr.metodo === 'Insuficiente' || corr.n < 5) return;
       arr.push({
         id,
         type: 'pattern',
@@ -413,41 +411,30 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
 
   // Persistencia de insights locales + meta de correlaciones adaptativas
   useEffect(() => {
-   const persistLocalInsights = async () => {
-  try {
-    if (!uid || !allInsights.length) return;
-
-    const insightsRef = doc(db, 'user_insights', uid);
-
-    await setDoc(
-      insightsRef,
-      {
-        userId: uid,
-        generatedAt: Timestamp.now(),
-        startDate: startYmd,
-        endDate: endYmd,
-        windowDays,
-        correlationMeta: {
-          caloriesEnergy: caloriesEnergyCorr,
-          carbsPctPerformance: carbsPctPerfCorr,
-          durationEnergy: durationEnergyCorr,
-        },
-        insights: allInsights.map((i) => ({
-          ...i,
-          createdAt: i.createdAt
-            ? Timestamp.fromDate(i.createdAt)
-            : Timestamp.now(),
-        })),
-      },
-      { merge: true } // para no pisar otros campos que ya tenga el doc
-    );
-  } catch (e) {
-    console.warn('No se pudieron persistir los insights locales:', e);
-  }
-};
-
-void persistLocalInsights();
-
+    const persistLocalInsights = async () => {
+      try {
+        if (!uid || !allInsights.length) return;
+        await addDoc(collection(db, 'userInsights'), {
+          userId: uid,
+            generatedAt: Timestamp.now(),
+            startDate: startYmd,
+            endDate: endYmd,
+            windowDays,
+            correlationMeta: {
+              caloriesEnergy: caloriesEnergyCorr,
+              carbsPctPerformance: carbsPctPerfCorr,
+              durationEnergy: durationEnergyCorr
+            },
+            insights: allInsights.map(i => ({
+              ...i,
+              createdAt: i.createdAt ? Timestamp.fromDate(i.createdAt) : Timestamp.now()
+            }))
+        });
+      } catch (e) {
+        console.warn('No se pudieron persistir los insights locales:', e);
+      }
+    };
+    void persistLocalInsights();
   }, [uid, allInsights, startYmd, endYmd, windowDays, caloriesEnergyCorr, carbsPctPerfCorr, durationEnergyCorr]);
 
   const loading = (loadingFoods || loadingWorkouts) && dailyPoints.length === 0;
@@ -528,11 +515,11 @@ void persistLocalInsights();
                 <InfoTooltip
                   isDark={isDark}
                   title="¿Qué muestra este gráfico?"
-                  description="Cada punto es un día con entrenamiento; se relaciona ingesta calórica y rendimiento. Abajo verás frases con método estadístico (Pearson o Spearman) según datos."
+                  description="Cada punto representa un día registrado. En horizontal están las calorías del día y en vertical tu rendimiento en el entreno."
                   bullets={[
-                    'Pearson: relaciona tendencias lineales y es sensible a outliers',
-                    'Spearman: usa rangos, capta relaciones monótonas y es robusto a outliers',
-                    'Si hay pocos días (n<8), la correlación se considera insuficiente'
+                    'Si los puntos suben hacia la derecha, comer más se asocia a rendir mejor.',
+                    'Si bajan hacia la derecha, comer más se asocia a rendir peor.',
+                    'Si están muy dispersos, no hay un patrón claro.'
                   ]}
                   legend={[
                     { color: 'bg-yellow-500', label: 'Bajo (<1800 kcal)' },
@@ -542,12 +529,24 @@ void persistLocalInsights();
                 />
               </div>
               {scatterData.length >= 2 && (
-                <div className="text-xs text-right space-y-0.5">
-                  <div className={isDark? 'text-gray-300':'text-gray-600'}>{kcalPerfPhrase}</div>
-                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{caloriesEnergyPhrase}</div>
-                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{carbsPerfPhrase}</div>
-                  <div className={isDark? 'text-gray-400':'text-gray-500'}>{durationEnergyPhrase}</div>
-                </div>
+                (() => {
+                  const insufficient = nCalPerf < 5 || caloriesEnergyCorr.n < 5 || carbsPctPerfCorr.n < 5 || durationEnergyCorr.n < 5;
+                  if (insufficient) {
+                    return (
+                      <div className={isDark? 'text-gray-300 text-xs text-right':'text-gray-600 text-xs text-right'}>
+                        Todavía no hay suficientes días registrados para analizar patrones entre tu alimentación y tu entrenamiento. Necesitas al menos 5 días con registros para ver relaciones claras.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="text-xs text-right space-y-0.5">
+                      <div className={isDark? 'text-gray-300':'text-gray-600'}>{kcalPerfPhrase}</div>
+                      <div className={isDark? 'text-gray-400':'text-gray-500'}>{caloriesEnergyPhrase}</div>
+                      <div className={isDark? 'text-gray-400':'text-gray-500'}>{carbsPerfPhrase}</div>
+                      <div className={isDark? 'text-gray-400':'text-gray-500'}>{durationEnergyPhrase}</div>
+                    </div>
+                  );
+                })()
               )}
             </div>
             <div className="h-96">
@@ -589,8 +588,12 @@ void persistLocalInsights();
                 <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Comparativa de Macros</h3>
                 <InfoTooltip
                   isDark={isDark}
-                  title="¿Qué ves aquí?"
-                  description="Distribución diaria de macronutrientes registrada. Busca consistencia."
+                  title="¿Qué muestra este gráfico?"
+                  description="Este gráfico muestra cómo se reparten tus calorías entre proteína, carbohidratos y grasas."
+                  bullets={[
+                    'Barras más altas significan mayor proporción de ese macronutriente.',
+                    'Observa la tendencia general, no solo un día suelto.'
+                  ]}
                 />
               </div>
             </div>
@@ -621,17 +624,35 @@ void persistLocalInsights();
               <InfoTooltip
                 isDark={isDark}
                 title="¿Cómo leer esto?"
-                description={`Estadísticas de los últimos ${windowDays} días. El CV (coeficiente de variación) es la variabilidad relativa (desviación/promedio). Puede superar 100% si el promedio es bajo.`}
+                description="Variación de tus calorías entre días. Mientras más baja, más constante es tu ingesta."
               />
             </div>
             <ul className={isDark ? 'text-gray-300 space-y-1' : 'text-gray-700 space-y-1'}>
               <li>• Días en zona óptima: {dailyPoints.filter(d => d.kcal >= 1800 && d.kcal <= 2200).length}</li>
               <li>• Performance promedio (sólo días con entreno): {scatterData.length>0 ? Math.round(scatterData.reduce((s,d)=>s+d.performance,0)/scatterData.length) : 0}%</li>
-              <li>• CV calorías: {(() => { const arr = dailyPoints.map(d=>d.kcal); const avg = arr.reduce((s,v)=>s+v,0)/(arr.length||1); const std = Math.sqrt(arr.reduce((s,v)=>s+(v-avg)**2,0)/(arr.length||1)); return avg>0 ? (std/avg*100).toFixed(1) : '0.0'; })()}%</li>
-              <li>• {kcalPerfPhrase}</li>
-              <li>• {caloriesEnergyPhrase}</li>
-              <li>• {carbsPerfPhrase}</li>
-              <li>• {durationEnergyPhrase}</li>
+              <li>• Consistencia calórica: {(() => { const arr = dailyPoints.map(d=>d.kcal); const avg = arr.reduce((s,v)=>s+v,0)/(arr.length||1); const std = Math.sqrt(arr.reduce((s,v)=>s+(v-avg)**2,0)/(arr.length||1)); return avg>0 ? (std/avg*100).toFixed(1) : '0.0'; })()}%</li>
+              {(() => {
+                const insufficient = nCalPerf < 5 || caloriesEnergyCorr.n < 5 || carbsPctPerfCorr.n < 5 || durationEnergyCorr.n < 5;
+                if (insufficient) {
+                  return (
+                    <>
+                      <p>Por ahora no hay suficiente historial para analizar estas relaciones (necesitas al menos 5 días con datos):</p>
+                      <ul style={{ marginLeft: "1rem" }}>
+                        <li>Lo que comes (calorías) y tu rendimiento en el entreno</li>
+                        <li>Lo que comes (calorías) y cómo te sientes de energía</li>
+                        <li>El porcentaje de carbohidratos en tu dieta y tu rendimiento</li>
+                        <li>La duración de tus entrenos y la energía que sientes</li>
+                      </ul>
+                    </>
+                  );
+                }
+                return [
+                  <li key="k">• {kcalPerfPhrase}</li>,
+                  <li key="c">• {caloriesEnergyPhrase}</li>,
+                  <li key="p">• {carbsPerfPhrase}</li>,
+                  <li key="d">• {durationEnergyPhrase}</li>
+                ];
+              })()}
             </ul>
           </div>
         </section>
@@ -692,7 +713,7 @@ function spearman(xs: number[], ys: number[]): { r: number; n: number } {
 interface AdaptiveCorrelation { r: number; n: number; metodo: 'Pearson' | 'Spearman' | 'Insuficiente'; ventana: string; fuerza: 'débil' | 'moderada' | 'fuerte'; basePearson?: number; baseSpearman?: number }
 function computeAdaptiveCorrelation(xs: number[], ys: number[], ventana: string): AdaptiveCorrelation {
   const n = Math.min(xs.length, ys.length);
-  if (n < 8) return { r: 0, n, metodo: 'Insuficiente', ventana, fuerza: 'débil' };
+  if (n < 5) return { r: 0, n, metodo: 'Insuficiente', ventana, fuerza: 'débil' };
   const p = pearson(xs, ys).r;
   const s = spearman(xs, ys).r;
   let metodo: 'Pearson' | 'Spearman';
