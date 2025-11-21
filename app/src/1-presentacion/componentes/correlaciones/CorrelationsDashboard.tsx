@@ -70,7 +70,22 @@ function correlationLabel(absR: number): 'débil' | 'moderada' | 'fuerte' {
   return 'fuerte';
 }
 function correlationPhrase(r: number, n: number, xLabel: string, yLabel: string): string {
-  return `Correlación ${correlationLabel(Math.abs(r))} entre ${xLabel} y ${yLabel} (r=${r.toFixed(2)}, n=${n}, Pearson)`;
+  const fuerza = correlationLabel(Math.abs(r));
+
+  if (n < 5) {
+    return `Aún no hay suficientes días para ver relación entre ${xLabel} y ${yLabel}.`;
+  }
+
+  if (fuerza === 'débil') {
+    return `Por ahora no se aprecia una relación clara entre ${xLabel} y ${yLabel}.`;
+  }
+
+  if (fuerza === 'moderada') {
+    return `Podría existir una relación entre ${xLabel} y ${yLabel}.`;
+  }
+
+  // fuerza === 'fuerte'
+  return `Tus ${xLabel} parecen influir de forma importante en tus ${yLabel}.`;
 }
 
 function generateDerivedInsights(daily: DailyPoint[], userWeightKg: number | undefined, rCalPerf: number): PersonalInsight[] {
@@ -366,9 +381,25 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   const derivedInsights = useMemo(() => generateDerivedInsights(dailyPoints, userWeightKg, rCalPerf), [dailyPoints, userWeightKg, rCalPerf]);
 
   // Frases adaptativas (correlaciones nuevas)
-  const adaptivePhrase = (corr: { r: number; n: number; metodo: string; fuerza: string }, x: string, y: string) => {
-    if (corr.metodo === 'Insuficiente' || corr.n < 5) return `Correlación insuficiente entre ${x} y ${y} (n<8).`;
-    return `Relación ${corr.fuerza} (${corr.metodo}) ${x}↔${y} (r=${corr.r.toFixed(2)}, n=${corr.n})`;
+  const adaptivePhrase = (
+    corr: { r: number; n: number; metodo: string; fuerza: string },
+    x: string,
+    y: string
+  ): string => {
+    if (corr.n < 5 || corr.metodo === 'Insuficiente') {
+      return `Aún no hay suficientes días para analizar la relación entre ${x} y ${y}.`;
+    }
+
+    if (corr.fuerza === 'débil') {
+      return `Por ahora no se ve una relación clara entre ${x} y ${y}.`;
+    }
+
+    if (corr.fuerza === 'moderada') {
+      return `Podría existir una relación entre ${x} y ${y}.`;
+    }
+
+    // fuerza === 'fuerte'
+    return `Parece haber una relación importante entre ${x} y ${y}.`;
   };
   const kcalPerfPhrase = useMemo(() => scatterData.length >= 2 ? correlationPhrase(rCalPerf, nCalPerf, 'calorías', 'rendimiento') : 'Correlación no disponible (n<2)', [rCalPerf, nCalPerf, scatterData.length]);
   const caloriesEnergyPhrase = useMemo(() => adaptivePhrase(caloriesEnergyCorr, 'calorías', 'energía percibida'), [caloriesEnergyCorr]);
@@ -378,17 +409,25 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   // Insights derivados + correlaciones (enriquecidos por correlaciones adaptativas)
   const correlationInsights = useMemo<PersonalInsight[]>(() => {
     const arr: PersonalInsight[] = [];
-    const pushCorr = (id: string, corr: typeof caloriesEnergyCorr, title: string, desc: string, actionable: string) => {
+    const pushCorr = (
+      id: string,
+      corr: typeof caloriesEnergyCorr,
+      title: string,
+      desc: string,
+      actionable: string,
+      xLabel: string,
+      yLabel: string
+    ) => {
       if (corr.metodo === 'Insuficiente' || corr.n < 5) return;
       arr.push({
         id,
         type: 'pattern',
         title,
-        description: desc.replace('{R}', corr.r.toFixed(2)).replace('{M}', corr.metodo).replace('{N}', String(corr.n)),
+        // Se usa desc sin incluir r, método ni n
+        description: desc,
         evidence: [
-          `Método: ${corr.metodo}`,
-          `r=${corr.r.toFixed(2)} (fuerza ${corr.fuerza})`,
-          `n=${corr.n}`
+          `Basado en tus últimos ${corr.n} días con registros válidos.`,
+          `Se observan patrones consistentes entre ${xLabel} y ${yLabel}.`
         ],
         actionable,
         confidence: corr.n >= 14 ? 'high' : 'medium',
@@ -396,13 +435,37 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
       });
     };
     if (caloriesEnergyCorr.r > 0.25) {
-      pushCorr('corr_cal_energy', caloriesEnergyCorr, '🔥 Ingesta y energía percibida', 'Mayor ingesta parece asociarse a mejor energía percibida (r={R}, {M}, n={N}).', 'Asegura calorías suficientes las horas previas al entreno para sostener energía.');
+      pushCorr(
+        'corr_cal_energy',
+        caloriesEnergyCorr,
+        '🔥 Ingesta y energía percibida',
+        'Mayor ingesta parece asociarse a mejor energía percibida.',
+        'Asegura calorías suficientes las horas previas al entreno para sostener energía.',
+        'calorías',
+        'energía percibida'
+      );
     }
     if (carbsPctPerfCorr.r > 0.3) {
-      pushCorr('corr_carbs_perf', carbsPctPerfCorr, '⚡ % Carbohidratos y rendimiento', 'Una mayor proporción de carbohidratos se asocia a mejor performance (r={R}, {M}, n={N}).', 'Sincroniza carbohidratos complejos 60–90 min antes de entrenar.');
+      pushCorr(
+        'corr_carbs_perf',
+        carbsPctPerfCorr,
+        '⚡ % Carbohidratos y rendimiento',
+        'Una mayor proporción de carbohidratos parece asociarse a mejor rendimiento.',
+        'Sincroniza carbohidratos complejos 60–90 min antes de entrenar.',
+        '% carbohidratos',
+        'rendimiento'
+      );
     }
     if (durationEnergyCorr.r < -0.3) {
-      pushCorr('corr_dur_energy', durationEnergyCorr, '⏱️ Duración y caída de energía', 'Entrenos más largos se asocian a menor energía percibida post (r={R}, {M}, n={N}).', 'Evalúa distribución de intensidad o agrega intra-entreno ligero (electrolitos/carbohidratos).');
+      pushCorr(
+        'corr_dur_energy',
+        durationEnergyCorr,
+        '⏱️ Duración y caída de energía',
+        'Entrenos más largos parecen asociarse a menor energía percibida después.',
+        'Evalúa distribución de intensidad o agrega intra-entreno ligero (electrolitos/carbohidratos).',
+        'duración entreno',
+        'energía percibida'
+      );
     }
     return arr.slice(0,3);
   }, [caloriesEnergyCorr, carbsPctPerfCorr, durationEnergyCorr]);
