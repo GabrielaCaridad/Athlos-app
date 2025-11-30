@@ -1,24 +1,11 @@
-// Análisis semanal proactivo (Cloud Functions v2)
-// ------------------------------------------------------------
-// Objetivo: generar un mensaje breve y motivador resumiendo la semana
-// del usuario (entrenos, energía, adherencia nutricional) y persistirlo
-// como notificación proactiva en 'chat_apolo'.
-// Notas clave:
-// - Ventana: semana ISO actual [lunes 00:00, lunes siguiente 00:00] en UTC.
-// - Fuentes: workouts (createdAt >= inicio) y foods (por date string >= inicioISO).
-// - OpenAI (gpt-4o-mini) para redactado; respuesta pequeña (máx 6 frases).
-// TODO(migración): Cambiar 'userFoodEntries' → 'foodDatabase' cuando confirmemos
-//   100% los datos unificados en producción.
+// Análisis semanal proactivo (resumen y notificación)
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2/options';
 import * as admin from 'firebase-admin';
 import OpenAI from 'openai';
 
-// Ensure admin is initialized
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
+if (!admin.apps.length) { admin.initializeApp(); }
 
 const db = admin.firestore();
 
@@ -52,16 +39,16 @@ type WeeklyContext = {
 function startOfWeek(d: Date) {
   const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const day = date.getUTCDay();
-  const diff = (day === 0 ? -6 : 1) - day; // ISO week starts Monday
+  const diff = (day === 0 ? -6 : 1) - day; // La semana ISO inicia lunes
   date.setUTCDate(date.getUTCDate() + diff);
   date.setUTCHours(0, 0, 0, 0);
   return date;
 }
 
 function isoWeekTag(date: Date) {
-  // Clone to UTC midnight
+  // Clonar a medianoche UTC
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  // Set to nearest Thursday
+  // Ajustar al jueves más cercano
   const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
@@ -80,8 +67,7 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
   const inicioISO = start.toISOString();
   const finISO = end.toISOString();
 
-  // Foods in last 7 days (by date string >= start date)
-  // Ojo: actualmente lee de 'userFoodEntries'. Ver TODO de migración arriba.
+  // Lectura de comidas de la semana (por date string)
   const startDateStr = inicioISO.split('T')[0];
   const foodsSnap = await db.collection('userFoodEntries')
     .where('userId', '==', userId)
@@ -96,7 +82,7 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
     mealCount += 1;
   }
 
-  // Workouts in the last week (filtrado por createdAt >= inicio)
+  // Entrenamientos en la semana (createdAt >= inicio)
   const workoutsSnap = await db.collection('workouts')
     .where('userId', '==', userId)
     .where('createdAt', '>=', admin.firestore.Timestamp.fromDate(start))
@@ -116,9 +102,9 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
   }
 
   const energiaPromedio = energiaCount > 0 ? Math.round((energiaSuma / energiaCount) * 10) / 10 : null;
-  const caloriasPromedio = mealCount > 0 ? Math.round((totalCalories / 7) /* per day */) : 0;
+  const caloriasPromedio = mealCount > 0 ? Math.round((totalCalories / 7) /* por día */) : 0;
 
-  // Insights
+  // Insights previos (máx 3)
   let insights: WeeklyContext['insights'] = undefined;
   try {
     const ins = await db.collection('user_insights').doc(userId).get();
@@ -134,7 +120,7 @@ async function buildWeeklyContext(userId: string): Promise<WeeklyContext> {
       }
     }
   } catch (e) {
-    console.warn('Insights load failed (non-blocking):', e);
+    console.warn('Insights load failed (no bloqueante):', e);
   }
 
   return {
@@ -237,7 +223,6 @@ export const analisisSemanalProgramado = onSchedule({
   timeZone: 'America/Mexico_City',
 }, async (_event) => {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  // Fetch a batch of users (basic implementation)
   const usersSnap = await db.collection('users').limit(100).get();
   for (const userDoc of usersSnap.docs) {
     const data = userDoc.data() as { userId?: string } | undefined;
@@ -255,5 +240,5 @@ export const analisisSemanalProgramado = onSchedule({
       console.error('Weekly generation failed for user', userId, e);
     }
   }
-  // no return needed
+  // Sin retorno
 });

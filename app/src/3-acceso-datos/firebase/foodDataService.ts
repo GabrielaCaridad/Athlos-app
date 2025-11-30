@@ -1,8 +1,6 @@
 // Servicio de alimentos (Firestore)
 // Propósito: manejar catálogo de alimentos y registros del usuario.
-// Colecciones: 'foodDatabase' (catálogo + registros de consumo unificados).
-// Formato de fecha: YYYY-MM-DD LOCAL (clave para consultas por día).
-// Índices: userId+date(+createdAt desc) y rangos por date para estadísticas.
+
 import { 
   collection, 
   addDoc, 
@@ -25,9 +23,6 @@ import {
 import { db } from './config';
 import { normalizeToLocalDateKey } from '../../utils/date';
 
-// Utilidades
-// Qué hace: quita undefined/null antes de escribir en Firestore.
-// Por qué: Firestore no acepta undefined y evita errores tontos.
 
 // Pequeña utilidad: limpio las propiedades undefined/null antes de enviar a Firestore.
 // Firestore no admite campos undefined, así que los omito para evitar errores.

@@ -1,14 +1,11 @@
 /**
- * Tarjeta de Perfil (sidebar)
- *
+ * Tarjeta de Perfil
+ 
  * Propósito
  * - Mostrar nombre y correo del usuario autenticado.
  * - Accesos rápidos: ir a Configuración y cerrar sesión.
- *
- * Notas
- * - No gestiona estado propio: consume `useAuth()` para `user` y `logout`.
- * - Usa estilos condicionados por `isDark` para tema.
  */
+
 // UserProfile: muestra info del usuario en la barra lateral y permite cerrar sesión.
 import { LogOut, User, Settings } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';

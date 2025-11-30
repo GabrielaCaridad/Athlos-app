@@ -1,11 +1,7 @@
 /**
- * Tooltip simple controlado internamente
- *
- * Comportamiento
- * - Muestra/oculta al hacer click en el trigger (children).
- * - Cierra al hacer click fuera o presionar Escape.
- * - Posicionamiento básico `side` (top/bottom) centrado horizontalmente.
- */
+ * Tooltip (informativo) simple con control interno.
+ * Click para abrir/cerrar; cierra con click fuera o Escape.
+ */ 
 import { useEffect, useRef, useState } from 'react';
 
 type TooltipProps = {

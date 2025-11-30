@@ -72,19 +72,8 @@ export default function InsightsPanel({ insights, loading, isDark, hideHeader }:
              'text-sm mt-1 text-center', 
              isDark ? 'text-gray-300' : 'text-gray-600' 
            ].join(' ')}>
-             Registra al menos 7 días con entrenamientos para ver tus patrones personales
+            Registra al menos 5 días con entrenamientos para ver tus patrones personales
            </p>
-        <div className="mt-4">
-          <button
-            type="button"
-            className={[
-              'inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-white shadow-md shadow-black/10',
-              isDark ? 'bg-blue-500 hover:bg-blue-600' : 'bg-blue-600 hover:bg-blue-700'
-            ].join(' ')}
-          >
-            Registrar entrenamiento ahora
-          </button>
-        </div>
       </div>
     );
   }

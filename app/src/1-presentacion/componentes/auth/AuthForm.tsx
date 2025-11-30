@@ -1,13 +1,8 @@
 /**
- * Formulario de Autenticación (login / registro)
- * Qué hace: permite iniciar sesión o crear cuenta y crea perfil básico en Firestore.
- * Flujo:
- *  - Login: signInWithEmailAndPassword → onAuthSuccess para navegar.
- *  - Registro: crea usuario, actualiza displayName y crea documento users/{uid} mínimo.
- * Validaciones: email formato simple, password >=6, nombre requerido en registro, confirmación igual.
- * Ojo: errores se traducen vía authErrorToMessage; no se modifica tema global (isDark solo estilos locales).
+ * Formulario de autenticación.
+ * Permite iniciar sesión o registrarse y crea/actualiza el perfil básico en Firestore.
  */
-// AuthForm: login y registro con Firebase Auth.
+
 import React, { useState } from 'react';
 import { Eye, EyeOff, Mail, Lock, User, Dumbbell, ArrowRight, Loader } from 'lucide-react';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from 'firebase/auth';
@@ -39,7 +34,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
   const validateForm = () => {
-    // Qué hace: construye objeto de errores por campo; devuelve true si no hay.
+    // Construye los errores por campo; devuelve true si no hay
     const newErrors: { [key: string]: string } = {};
 
     // Validación del email
@@ -71,7 +66,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
-    // Qué hace: procesa login o registro; en registro crea perfil y feedback toast.
+    // Procesa login o registro; en registro crea el perfil
     e.preventDefault();
     if (!validateForm()) return;
 
@@ -125,8 +120,7 @@ export default function AuthForm({ isDark, onAuthSuccess }: AuthFormProps) {
 
   // Envío de correo para restablecer contraseña
   const handlePasswordReset = async () => {
-    // Qué hace: envía correo de reset si email es válido y modo login.
-    // Solo disponible en modo login
+    // Envía correo de reset si el email es válido (solo en login)
     if (!isLogin) return;
     const email = (formData.email || '').trim();
     if (!email) {

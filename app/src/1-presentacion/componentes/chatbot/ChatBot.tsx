@@ -254,7 +254,7 @@ export default function ChatBot({ isDark }: ChatBotProps) {
               
               {/* Botones de acción: 
                   - Papelera: limpia los mensajes y deja la conversación en blanco.
-                  - X: cierra la ventana del chat (el botón flotante principal no cierra). */}
+                  - X: cierra la ventana del chat  */}
               <div className="flex gap-2">
                 <button
                   onClick={clearMessages}

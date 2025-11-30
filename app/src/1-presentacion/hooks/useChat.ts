@@ -1,8 +1,9 @@
-// Propósito: manejar estado y envío de mensajes del chat Apolo.
-// Contexto: usa Cloud Function 'chat' (callable) y toasts para feedback.
+/**
+ * Hook para manejar el chat de Apolo.
+ * Envía mensajes a la función remota y gestiona estado y errores.
+ */
 import { useCallback, useEffect, useRef, useState } from 'react';
-// Uso las Cloud Functions de Firebase para enviar los mensajes al backend.
-import { httpsCallable, HttpsCallable } from 'firebase/functions'; // Ojo: requiere inicialización de Firebase Functions
+import { httpsCallable, HttpsCallable } from 'firebase/functions'; 
 // Instancia de Functions inicializada en config Firebase
 import { functions } from '../../3-acceso-datos/firebase/config';
 // Usuario actual para validar sesión antes de enviar
@@ -34,9 +35,7 @@ type ChatResult = {
 type ChatPayload = { message: string; sessionId?: string };
 
 export const useChat = () => {
-  // Qué hace: gestiona ciclo de vida del chat (envío, respuestas, errores, rate limit).
-  // Por qué: encapsular lógica para reutilizar en UI sin duplicar handlers.
-  // Ojo: valida auth antes de enviar; respeta límites (RESOURCE_EXHAUSTED); diferencia modo general/personalizado según backend.
+  // Maneja envío, respuestas, errores y límites de uso
   const toast = useToast();
   // Estado: historial de mensajes
   const [messages, setMessages] = useState<Message[]>([]);
@@ -64,9 +63,7 @@ export const useChat = () => {
     setMessages(prev => [...prev, m]);
   }, []);
 
-  // Función: envía mensaje al backend
-  // Por qué: encapsula validaciones (longitud, auth) y manejo de respuesta.
-  // Ojo: limita a 500 chars; maneja códigos comunes (timeout, rate limit, auth).
+  // Envía el mensaje al backend (valida longitud y auth)
   const sendMessage = useCallback(async (text: string) => {
     const content = (text || '').trim();
     if (!content) return;
@@ -89,7 +86,7 @@ export const useChat = () => {
       return;
     }
 
-  // Debug: datos básicos de envío
+  // Datos básicos de envío (debug)
   console.log('� [Chat] Enviando', { content, uid: currentUser.uid, sessionId });
 
     setError(null);
@@ -111,7 +108,7 @@ export const useChat = () => {
         throw new Error('Funciones no inicializadas');
       }
 
-      // Llamada a backend callable
+      // Llamada a la función remota
       console.log('📡 [Chat] Payload', { message: content, sessionId: sessionId || 'nuevo' });
 
       const result = await chat({ 
@@ -140,7 +137,7 @@ export const useChat = () => {
       addMessage(botMsg);
 
     } catch (e: unknown) {
-  // Manejo de errores: mapear códigos a mensaje amigable
+  // Mapea errores a mensajes amigables
       const err = e as { code?: string; message?: string };
       console.error('❌ Error completo:', err);
       console.error('❌ Error code:', err?.code);

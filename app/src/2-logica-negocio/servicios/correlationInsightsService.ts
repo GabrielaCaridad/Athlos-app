@@ -1,18 +1,7 @@
-/*
-  CorrelationInsightsService
-  ------------------------------------------------------------
-  Analiza correlaciones entre nutrición y rendimiento para generar
-  insights personales. Combina foods (calorías/macros) y workouts
-  (energía, duración, performance) por día, intenta obtener insights
-  con IA mediante Cloud Functions y cae a un fallback determinístico
-  cuando no hay suficiente información o la IA falla.
-
-  Puntos clave de diseño:
-  - Usa el UID del usuario autenticado 
-  - Valida mínimo de días de datos antes de intentar analizar.
-  - Guarda los insights válidos en Firestore para reuso en el dashboard.
-  ------------------------------------------------------------
-*/
+/**
+ * Correlaciones entre nutrición y rendimiento.
+ * Genera insights personales combinando comidas y entrenos
+ */
 
 import { Timestamp as FsTimestamp, setDoc, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -60,9 +49,6 @@ export interface UserProfile {
   experienceLevel: 'beginner' | 'intermediate' | 'advanced';
   workoutsPerWeek: number;
 }
-
-// Utilidad local: convertir Timestamp (Firestore) a Date de JS de forma segura
-// (se removió timestampToDate: ya no es necesario con consultas por rango)
 
 export class CorrelationInsightsService {
   /**
@@ -137,11 +123,10 @@ export class CorrelationInsightsService {
     }
   }
 
-  /** Obtiene el perfil del usuario desde Firestore con fallback por campo userId */
+  /** Obtiene el perfil del usuario; si falta, intenta por campo userId */
   private async getUserProfile(): Promise<UserProfile | null> {
     try {
-      // 1) Obtener UID dinámicamente desde Firebase Authentication
-      // Nota: Se ignora el parámetro de entrada y se usa el usuario autenticado
+      
       const auth = getAuth();
       const authUserId = auth.currentUser?.uid;
       if (!authUserId) {
@@ -647,7 +632,7 @@ export class CorrelationInsightsService {
     }
   }
 
-  /** Prepara un JSON resumido y agregados para enviar a la IA */
+  /** Prepara un resumen con agregados para la función remota */
   private prepareDataForAI(data: CorrelationDataPoint[], profile: UserProfile): string {
     const summary = {
       userProfile: {
@@ -679,7 +664,7 @@ export class CorrelationInsightsService {
     return JSON.stringify(summary, null, 2);
   }
 
-  /** Llamada principal via Firebase Function generateInsights */
+  /** Llama a la función remota generateInsights */
   private async generateInsightsWithAI(dataJSON: string, profile: UserProfile): Promise<PersonalInsight[]> {
     try {
       const { httpsCallable } = await import('firebase/functions');
@@ -730,7 +715,7 @@ export class CorrelationInsightsService {
     }
   }
 
-  /** Fallback: usa los análisis locales síncronos existentes */
+  /** Fallback: usa los análisis locales ya implementados */
   private getFallbackInsights(data: CorrelationDataPoint[]): PersonalInsight[] {
     const insights: PersonalInsight[] = [];
 
@@ -746,7 +731,7 @@ export class CorrelationInsightsService {
     return insights;
   }
 
-  /** Lee insights guardados previamente para mostrar al instante si existen */
+  /** Lee insights guardados previamente si existen */
   async getSavedInsights(userId: string): Promise<PersonalInsight[] | null> {
     try {
       const ref = doc(db, 'user_insights', userId);
@@ -780,6 +765,3 @@ export class CorrelationInsightsService {
     }
   }
 }
-
-// Export por defecto opcional si se prefiere instancia única
-export const correlationInsightsService = new CorrelationInsightsService();

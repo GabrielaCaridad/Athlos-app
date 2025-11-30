@@ -1,23 +1,6 @@
-// userDataService
-// ------------------------------------------------------------
-// Objetivo: proveer al dashboard y otras vistas una SUSCRIPCIÓN combinada
-// (workouts + foods) para una ventana móvil de días recientes, reaccionando
-// en tiempo real a cada cambio.
-// Qué hace:
-// - Calcula un rango [fromStr, toStr] en formato YYYY-MM-DD UTC para foods.
-// - Calcula startTs (Timestamp) para workouts (filtra por createdAt >= inicio).
-// - Escucha dos snapshots independientes y emite un objeto combinado cada vez.
-// Por qué así:
-// - Evitamos flicker o estados intermedios (primero workouts, luego foods) al
-//   emitir siempre tras actualizar cualquiera.
-// - Unificamos la colección de alimentos en 'foodDatabase'.
-// Índices necesarios (Firestore):
-// - workouts: composite userId+createdAt DESC (ordenado por createdAt)
-// - foodDatabase: composite userId+date DESC (rango + orderBy(date,'desc'))
-// Ojo:
-// - Si falta un índice, Firestore lanzará 'failed-precondition' y debe crearse.
-// - Este servicio NO pagina; si la ventana (days) es grande, considerar límites.
-//-------------------------------------------------------------
+// Suscripción combinada de workouts + foods para días recientes.
+// Emite en tiempo real un objeto unificado evitando estados intermedios.
+
 import { collection, onSnapshot, orderBy, query, where, Timestamp, Unsubscribe } from 'firebase/firestore';
 import { db } from '../../3-acceso-datos/firebase/config';
 import type { WorkoutSession } from '../../3-acceso-datos/firebase/firestoreService';
@@ -30,8 +13,8 @@ export type UserData = {
 };
 
 export function subscribeUserData(userId: string, days: number, cb: (data: UserData) => void): Unsubscribe {
-  // Ventana móvil desde medianoche local de hoy hacia atrás N días
-  // Nota: se usa medianoche local para workouts y claves UTC ISO para foods.
+  // Ventana móvil: desde medianoche local hacia atrás N días
+  // Workouts usan medianoche local; foods usan claves ISO UTC (YYYY-MM-DD)
   const now = new Date();
   const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startBoundary = new Date(todayMidnight);
@@ -43,7 +26,7 @@ export function subscribeUserData(userId: string, days: number, cb: (data: UserD
   let workouts: WorkoutSession[] = [];
   let foods: UserFoodEntry[] = [];
 
-  // Emite el estado combinado actual (sincronización simple)
+  // Emite el estado combinado actual
   const maybeEmit = () => cb({ workouts, foods });
 
   const qWorkouts = query(
@@ -60,7 +43,7 @@ export function subscribeUserData(userId: string, days: number, cb: (data: UserD
     maybeEmit();
   });
 
-  // Lectura de alimentos unificados en 'foodDatabase' (antes otra colección).
+  // Lectura de alimentos en 'foodDatabase'
   const qFoods = query(
     collection(db, 'foodDatabase'),
     where('userId', '==', userId),

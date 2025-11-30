@@ -1,13 +1,4 @@
-/**
- * Interruptor de tema (claro/oscuro)
- *
- * Uso
- * - Recibe `isDark` y `toggle` desde el contenedor para no acoplarse a ningún store.
- * - No persiste estado: solo dispara `toggle()` cuando se hace click.
- *
- * Accesibilidad
- * - El botón usa un ícono (Sol/Luna) y animación de “thumb” para indicar estado.
- */
+
 // ThemeToggle: interruptor de tema claro/oscuro para la app.
 import { Sun, Moon } from 'lucide-react';
 

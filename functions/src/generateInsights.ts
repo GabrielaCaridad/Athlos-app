@@ -1,23 +1,8 @@
-// Generación de insights personalizados (Cloud Function v2)
-// ------------------------------------------------------------
-// Objetivo: analizar datos históricos del usuario (nutrición + entrenos)
-// y devolver hasta 6 insights accionables con evidencia y recomendación.
-// Flujo:
-// 1. Validar auth y payload (dataJSON + profile).
-// 2. Construir prompt con rangos científicos fuerza/hipertrofia.
-// 3. Llamar a OpenAI (gpt-4o-mini) en modo JSON para respuesta estructurada.
-// 4. Parsear defensivamente y normalizar cada insight.
-// 5. Retornar lista lista para guardar en Firestore (caller decide persistencia).
-// Notas:
-// - No se persisten aquí los insights: responsabilidad del cliente.
-// - Se exige OPENAI_API_KEY como secret (Firebase). Si falta: failed-precondition.
-// - dataJSON debe ser ya un resumen limpio (no hacemos limpieza pesada aquí).
-// - Limitamos a 6 insights para foco y evitar ruido.
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import OpenAI from 'openai';
 import * as admin from 'firebase-admin';
 
-// Ensure admin initialized (mirrors chat handler convention)
+// Inicializa admin si no está (igual que en el chat)
 if (!admin.apps.length) {
   admin.initializeApp();
 }
@@ -58,8 +43,6 @@ export const generateInsights = onCall({ region: 'us-central1', timeoutSeconds: 
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new HttpsError('failed-precondition', 'OpenAI API key no configurada');
     }
 
   const systemPrompt = `Eres un sistema experto de análisis nutricional y de rendimiento deportivo especializado en entrenamiento de FUERZA/HIPERTROFIA (GYM), NO atletas de resistencia.

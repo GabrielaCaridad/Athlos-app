@@ -1,10 +1,6 @@
 /**
- * Página de Configuración
- * Qué hace: edición de perfil, definición de objetivos y cálculo de métricas derivadas (IMC, calorías, macros).
- * Flujo:
- *  - Carga perfil (crea uno básico si no existe) y calcula métricas si hay datos completos.
- *  - Guardar: persiste perfil, intenta auto-registro de peso y recalcula personalización.
- * Ojo: si faltan datos, muestra aviso y no calcula métricas; mantiene UI estable con perfil mínimo en memoria.
+ * Página de configuración del usuario.
+ * Permite editar el perfil, objetivos y mostrar métricas calculadas (IMC, calorías, macros).
  */
 import { useState, useEffect } from 'react';
 import { Timestamp } from 'firebase/firestore';

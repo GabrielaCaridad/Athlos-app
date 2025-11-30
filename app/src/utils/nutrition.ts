@@ -1,11 +1,6 @@
-// Utilidades de nutrición compartidas
-// ------------------------------------------------------------
-// - aggregateMacros: suma proteína/carbs/grasas de una lista de elementos.
-//   Ignora undefined y trata valores faltantes como 0. Útil para totals
-//   diarios o por comida.
-//   Ejemplo:
-//     aggregateMacros([{ protein: 10, carbs: 20 }, { fats: 5 }])
-//       => { protein: 10, carbs: 20, fats: 5 }
+// Utilidades de nutrición.
+// aggregateMacros: suma proteína/carbs/grasas; ignora undefined (usa 0).
+// Ejemplo: [{protein:10, carbs:20}, {fats:5}] ⇒ {protein:10, carbs:20, fats:5}
 
 export type MacroLike = { protein?: number; carbs?: number; fats?: number };
 

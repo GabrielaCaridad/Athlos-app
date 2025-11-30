@@ -73,29 +73,38 @@ function correlationPhrase(r: number, n: number, xLabel: string, yLabel: string)
   const fuerza = correlationLabel(Math.abs(r));
 
   if (n < 5) {
-    return `Aún no hay suficientes días para ver relación entre ${xLabel} y ${yLabel}.`;
+    return `Aún no hay suficientes días para evaluar la relación entre ${xLabel} y ${yLabel}.`;
   }
 
   if (fuerza === 'débil') {
-    return `Por ahora no se aprecia una relación clara entre ${xLabel} y ${yLabel}.`;
+    return `Por ahora no se observa una relación clara entre ${xLabel} y ${yLabel}.`;
   }
 
   if (fuerza === 'moderada') {
-    return `Podría existir una relación entre ${xLabel} y ${yLabel}.`;
+    return `Hay indicios de una relación entre ${xLabel} y ${yLabel}.`;
   }
 
   // fuerza === 'fuerte'
-  return `Tus ${xLabel} parecen influir de forma importante en tus ${yLabel}.`;
+  return `La variación de ${xLabel} se asocia de forma consistente con la de ${yLabel}.`;
 }
 
 function generateDerivedInsights(daily: DailyPoint[], userWeightKg: number | undefined, rCalPerf: number): PersonalInsight[] {
   const insights: PersonalInsight[] = [];
-  if (!daily || daily.length < 3) return insights;
+  // Usa solo días con datos reales; el rango incluye días vacíos
+  const activeDays = (daily || []).filter(d =>
+    (d.kcal > 0) ||
+    (d.protein_g > 0) ||
+    (d.carbs_g > 0) ||
+    (d.fats_g > 0) ||
+    ((d.performance ?? 0) > 0) ||
+    ((d.durationSec ?? 0) > 0)
+  );
+  if (activeDays.length < 5) return insights;
   const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / (arr.length || 1);
-  const kcalArr = daily.map(d => d.kcal);
-  const proteinArr = daily.map(d => d.protein_g);
-  const carbsArr = daily.map(d => d.carbs_g);
-  const fatsArr = daily.map(d => d.fats_g);
+  const kcalArr = activeDays.map(d => d.kcal);
+  const proteinArr = activeDays.map(d => d.protein_g);
+  const carbsArr = activeDays.map(d => d.carbs_g);
+  const fatsArr = activeDays.map(d => d.fats_g);
   const avgK = avg(kcalArr); const avgP = avg(proteinArr); const avgC = avg(carbsArr); const avgF = avg(fatsArr);
   const stdK = Math.sqrt(avg(kcalArr.map(k => (k - avgK) ** 2)));
   const cvK = avgK > 0 ? (stdK / avgK) * 100 : 0;
@@ -391,15 +400,15 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     }
 
     if (corr.fuerza === 'débil') {
-      return `Por ahora no se ve una relación clara entre ${x} y ${y}.`;
+      return `No se observa una relación clara entre ${x} y ${y}.`;
     }
 
     if (corr.fuerza === 'moderada') {
-      return `Podría existir una relación entre ${x} y ${y}.`;
+      return `Se aprecian indicios de relación entre ${x} y ${y}.`;
     }
 
     // fuerza === 'fuerte'
-    return `Parece haber una relación importante entre ${x} y ${y}.`;
+    return `Se detecta una relación consistente entre ${x} y ${y}.`;
   };
   const kcalPerfPhrase = useMemo(() => scatterData.length >= 2 ? correlationPhrase(rCalPerf, nCalPerf, 'calorías', 'rendimiento') : 'Correlación no disponible (n<2)', [rCalPerf, nCalPerf, scatterData.length]);
   const caloriesEnergyPhrase = useMemo(() => adaptivePhrase(caloriesEnergyCorr, 'calorías', 'energía percibida'), [caloriesEnergyCorr]);
@@ -426,8 +435,8 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
         // Se usa desc sin incluir r, método ni n
         description: desc,
         evidence: [
-          `Basado en tus últimos ${corr.n} días con registros válidos.`,
-          `Se observan patrones consistentes entre ${xLabel} y ${yLabel}.`
+            `Últimos ${corr.n} días válidos (ventana ${corr.ventana}).`,
+            `Patrón consistente detectado entre ${xLabel} ↔ ${yLabel}.`
         ],
         actionable,
         confidence: corr.n >= 14 ? 'high' : 'medium',

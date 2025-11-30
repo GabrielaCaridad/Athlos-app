@@ -1,9 +1,7 @@
-// Propósito: capa central de acceso a Firestore (perfiles, alimentos unificados, workouts, plantillas)
-// Contexto: colecciones usadas -> users, foodDatabase (antes foods/userFoodEntries), workouts, workout_templates.
-//           claves de fecha de alimentos: YYYY-MM-DD LOCAL; workouts usan createdAt/completedAt Timestamp.
-//           índices típicos: foodDatabase(userId+date+createdAt DESC), workouts(userId+createdAt DESC),
-//           workouts(userId+completedAt DESC) para listados finalizados.
-// Nota: solo se añaden comentarios; lógica intacta.
+/**
+ * Acceso a Firestore: perfiles, alimentos, workouts y plantillas.
+ * Normaliza claves de fecha y ofrece utilidades de métricas básicas.
+ */
 import { 
   collection,
   addDoc,
@@ -47,8 +45,7 @@ export interface UserProfile {
 
 // User profile CRUD
 export const userService = {
-  // Qué hace: crea/merge del perfil en users/{uid} (id estable = uid)
-  // Ojo: guarda userId para reglas de seguridad.
+  // Crea/actualiza el perfil en users/{uid} y guarda userId
   async createUserProfile(
     userId: string,
     profileData: Pick<UserProfile, 'displayName' | 'email'> & Partial<UserProfile>
@@ -69,19 +66,19 @@ export const userService = {
     }
   },
 
-  // Qué hace: calcula edad (utiliza helper compartido para consistencia)
+  // Calcula edad (util compartida)
   calculateAge(dateOfBirth?: string): number {
     return calcAgeUtil(dateOfBirth, 0);
   },
 
-  // Qué hace: BMR (Mifflin-St Jeor). Por qué: base para TDEE.
+  // BMR (Mifflin-St Jeor) como base para TDEE
   calculateBMR(weightKg: number, heightCm: number, age: number, gender: NonNullable<UserProfile['gender']>): number {
     const base = 10 * (weightKg || 0) + 6.25 * (heightCm || 0) - 5 * (age || 0);
     const genderOffset = gender === 'male' ? 5 : gender === 'female' ? -161 : 0;
     return Math.max(0, base + genderOffset);
   },
 
-  // Qué hace: aplica multiplicador actividad → TDEE. Ojo: default moderado.
+  // Aplica multiplicador de actividad → TDEE (default moderado)
   calculateTDEE(bmr: number, activityLevel: NonNullable<UserProfile['activityLevel']>): number {
     const activityMultipliers: Record<NonNullable<UserProfile['activityLevel']>, number> = {
       sedentary: 1.2,
@@ -94,7 +91,7 @@ export const userService = {
     return Math.max(0, bmr * mult);
   },
 
-  // Qué hace: ajusta calorías según objetivo (déficit/superávit/control)
+  // Ajusta calorías según objetivo (déficit/superávit/control)
   calculateCalorieTarget(tdee: number, primaryGoal: NonNullable<UserProfile['primaryGoal']>): number {
     const goalAdjust: Record<NonNullable<UserProfile['primaryGoal']>, number> = {
       lose_weight: -0.15,
@@ -107,7 +104,7 @@ export const userService = {
     return Math.max(1200, Math.round(tdee * (1 + adjust)));
   },
 
-  // Qué hace: macros (proteína basada en objetivo; resto por calorías). Ojo: fallback sin peso.
+  // Macros: proteína por objetivo y resto por calorías (fallback si no hay peso)
   calculateMacros(
     dailyCalories: number,
     primaryGoal: NonNullable<UserProfile['primaryGoal']>,
@@ -149,7 +146,7 @@ export const userService = {
     return { protein: Math.max(0, proteinG), carbs: Math.max(0, carbsG), fats: Math.max(0, fatsG) };
   },
 
-  // Qué hace: patch parcial del perfil. Por qué: evitar sobrescribir campos no enviados.
+  // Patch parcial del perfil (evita sobrescribir campos no enviados)
   async updateUserProfile(userId: string, updates: Partial<UserProfile>) {
     try {
       const q = query(collection(db, 'users'), where('userId', '==', userId));
@@ -164,7 +161,7 @@ export const userService = {
     }
   },
 
-  // Qué hace: obtiene perfil por userId (consulta por campo). Índice simple en userId.
+  // Obtiene perfil por userId (consulta por campo)
   async getUserProfile(userId: string) {
     try {
       const q = query(collection(db, 'users'), where('userId', '==', userId));
@@ -183,7 +180,7 @@ export const userService = {
     }
   },
 
-  // Qué hace: calcula BMI + categoría simple.
+  // Calcula BMI y categoría simple
   calculateBMI(heightCm: number, weightKg: number): { bmi: number; category: 'underweight' | 'normal' | 'overweight' | 'obese' } {
     const h = Math.max(0, heightCm) / 100; // a metros
     const w = Math.max(0, weightKg);
@@ -196,8 +193,7 @@ export const userService = {
     return { bmi, category };
   },
 
-  // Qué hace: recalcula calorías y macros y persiste actualización.
-  // Ojo: aplica defaults razonables si faltan datos físicos.
+  // Recalcula calorías y macros y persiste actualización (con defaults razonables)
   async initializePersonalization(
     userId: string,
     overrides?: Partial<UserProfile>
@@ -307,7 +303,7 @@ export interface FoodEntry {
   createdAt: Timestamp;
 }
 
-/* Interfaz para los datos de entrada */
+  /* Datos de entrada para crear alimento */
 interface CreateFoodData {
   name: string;
   calories: number;
@@ -316,22 +312,19 @@ interface CreateFoodData {
 }
 
 export const foodService = {
-  // (Limpieza) Migré toda la persistencia de alimentos a 'foodDatabase'.
-  // Mantengo esta API para no romper la UI.
-  // Clave de fecha local (YYYY-MM-DD) – reemplaza uso previo UTC
+  // Persistencia unificada en 'foodDatabase' (mantiene API estable)
+  // Clave de fecha local (YYYY-MM-DD)
   toLocalDateKey(d: Date): string {
     return normalizeToLocalDateKey(d);
   },
-  // Compat alias: mantener llamadas antiguas pero devolviendo clave LOCAL
+  // Alias de compatibilidad (devuelve clave local)
   toUTCDateKey(d: Date): string {
     return normalizeToLocalDateKey(d);
   },
   /* Agregar un nuevo alimento */
   async addFood(userId: string, foodData: CreateFoodData): Promise<string> {
     try {
-      // Qué hace: crea entrada en 'foodDatabase' usando clave de fecha UTC YYYY-MM-DD.
-      // Por qué: mantener consistencia con backend/chat y evitar desfases por zona horaria.
-      // Colección: foodDatabase.
+      // Crea entrada en 'foodDatabase' usando clave YYYY-MM-DD
   const dateKey = getTodayLocalDateKey(); // clave local de hoy YYYY-MM-DD
       const createdAt = Timestamp.now();
       const docRef = await addDoc(collection(db, 'foodDatabase'), {
@@ -343,7 +336,7 @@ export const foodService = {
         date: dateKey,
         createdAt
       });
-      // Log diagnóstico (solo dev) para confirmar escritura diaria
+      // Log de diagnóstico (solo dev)
       if (typeof console !== 'undefined') {
         console.log('[addFood] wrote', { userId, date: dateKey, createdAt });
       }
@@ -354,7 +347,7 @@ export const foodService = {
     }
   },
 
-  /* Obtener alimentos por fecha*/
+  /* Obtener alimentos por fecha */
   async getFoodsByDate(userId: string, date: string): Promise<FoodEntry[]> {
     try {
       // Índice: foodDatabase(userId ASC, date ASC, createdAt DESC)
@@ -376,11 +369,10 @@ export const foodService = {
     }
   },
 
-  /*Actualizar un alimento*/
+  /* Actualizar un alimento */
   async updateFood(foodId: string, updates: Partial<CreateFoodData>): Promise<void> {
     try {
-      // Qué hace: patch sobre documento existente de 'foodDatabase'.
-      // Ojo: no cambia la clave 'date' (YYYY-MM-DD) ni el createdAt.
+      // Patch del documento; no cambia 'date' ni 'createdAt'
       const foodRef = doc(db, 'foodDatabase', foodId);
       await updateDoc(foodRef, updates);
     } catch (error) {
@@ -389,10 +381,10 @@ export const foodService = {
     }
   },
 
-  /*Eliminar un alimento*/
+  /* Eliminar un alimento */
   async deleteFood(foodId: string): Promise<void> {
     try {
-      // Qué hace: elimina documento de 'foodDatabase' por id.
+      // Elimina documento por id
       const foodRef = doc(db, 'foodDatabase', foodId);
       await deleteDoc(foodRef);
     } catch (error) {
@@ -654,7 +646,7 @@ export const workoutService = {
       const msg = (err as { message?: string; code?: string })?.message || '';
       const code = (err as { code?: string })?.code || '';
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
-        // Ojo: fallback sin índice (ordenamos en memoria tras traer por userId)
+        // Fallback sin índice (ordena en memoria tras traer por userId)
         const q2 = query(
           collection(db, 'workouts'),
           where('userId', '==', userId)
@@ -690,7 +682,7 @@ export const workoutService = {
       const msg = (err as { message?: string; code?: string })?.message || '';
       const code = (err as { code?: string })?.code || '';
       if (code === 'failed-precondition' || msg.toLowerCase().includes('requires an index')) {
-        // Ojo: fallback sin índice (trae y ordena en memoria)
+        // Fallback sin índice (trae y ordena en memoria)
         const q2 = query(
           collection(db, 'workouts'),
           where('userId', '==', userId)

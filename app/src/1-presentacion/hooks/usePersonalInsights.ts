@@ -1,6 +1,7 @@
-// Propósito: calcular y exponer insights personales (correlaciones simples y patrones) para el usuario.
-// Contexto: primero muestra cache local si existe para respuesta rápida, luego recalcula en segundo plano.
-// Ojo: no dispara cálculo si falta userId; maneja errores devolviendo mensaje simple para UI.
+/**
+ * Hook para obtener insights personales.
+ * Usa cache inicial y refresca en segundo plano.
+ */
 import { useEffect, useState, useCallback } from 'react';
 // Traigo la sesión actual para conocer el userId si no me lo pasan desde fuera.
 import { useAuth } from './useAuth';
@@ -15,16 +16,16 @@ export interface UsePersonalInsightsReturn {
 }
 
 export const usePersonalInsights = (userIdOverride?: string): UsePersonalInsightsReturn => {
-  // UserId: prioriza override externo; si no, el uid de la sesión para flexibilidad (p.e. vista admin).
+  // Prioriza override externo; si no, usa el uid de la sesión
   const { user } = useAuth();
   const userId: string | null = (userIdOverride ?? user?.uid) ?? null;
 
-  // Estado: insights guardados/recalculados, bandera de carga y error legible.
+  // Estado de insights, carga y error
   const [insights, setInsights] = useState<PersonalInsight[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Refetch: fuerza recomputación manual (botón refrescar) ignorando cache previa en memoria.
+  // Refetch manual ignorando cache en memoria
   const fetchInsights = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
@@ -42,8 +43,7 @@ export const usePersonalInsights = (userIdOverride?: string): UsePersonalInsight
     }
   }, [userId]);
 
-  // Efecto inicial: mostrar cache si hay para UX rápida; si no, marcar loading durante el primer cálculo.
-  // Luego refresca siempre para asegurar datos recientes, sin bloquear si ya había cache.
+  // Carga inicial: muestra cache si hay y luego refresca
   useEffect(() => {
     let canceled = false;
     const run = async () => {

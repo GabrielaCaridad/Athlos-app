@@ -1,6 +1,7 @@
-// Propósito: registrar alimentos del día, buscar (base local + USDA) y ver totales.
-// Contexto: usa foodDatabase (userId+date YYYY-MM-DD UTC), servicios userFoodService y usdaFoodAPI.
-// Índices: foodDatabase(userId+date+createdAt DESC) y foodDatabase(userId+date DESC) para rangos.
+/**
+ * Registro diario de alimentos con búsqueda local y USDA.
+ * Muestra totales del día y permite añadir entradas de forma rápida.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Search, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -8,7 +9,7 @@ import {
   foodDatabaseService, 
   userFoodService, 
   DatabaseFood, 
-  UserFoodEntry 
+  UserFoodEntry
 } from '../../../2-logica-negocio/servicios/foodDataService';
 import { usdaFoodService, AdaptedUSDAFood } from '../../../3-acceso-datos/apis-externas/usdaFoodAPI';
 import { useToast } from '../../componentes/comun/ToastProvider'; // Toasts del host global
@@ -29,8 +30,8 @@ const MEAL_CONFIG = {
 
 export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const { user } = useAuth();
-  const toast = useToast(); // Toasts visibles sobre la UI (host global con alto z-index)
-  // Qué hace: permite decimales con coma o punto en inputs numéricos
+  const toast = useToast(); // Toasts globales de la app
+  // Permite decimales con coma o punto en inputs numéricos
   const parseDecimal = useCallback((v: string) => {
     if (!v) return 0;
     const normalized = v.replace(',', '.').trim();
@@ -38,10 +39,10 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     return isNaN(n) ? 0 : n;
   }, []);
   
-  // Estados principales del día seleccionado y UI
+  // Estado del día seleccionado y UI
   const [userFoods, setUserFoods] = useState<UserFoodEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  // Ojo: clave de fecha normalizada YYYY-MM-DD en UTC (consistencia con backend/chat)
+  // Clave de fecha normalizada YYYY-MM-DD
   const [selectedDate, setSelectedDate] = useState(getTodayLocalDateKey());
   const [expandedMeals, setExpandedMeals] = useState<Record<MealType, boolean>>({
     breakfast: true,
@@ -50,7 +51,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     snack: true,
   });
   
-  // Estados para búsqueda (local + USDA)
+  // Búsqueda (base local + USDA)
   const [searchTerm, setSearchTerm] = useState('');
   const [databaseFoods, setDatabaseFoods] = useState<DatabaseFood[]>([]);
   const [usdaResults, setUsdaResults] = useState<AdaptedUSDAFood[]>([]);
@@ -103,7 +104,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
   const [isProcessingCart, setIsProcessingCart] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Bloque: totales del día derivados de la lista (cálculo barato en render)
+  // Totales del día derivados de la lista
   const totalCalories = userFoods.reduce((sum, food) => sum + Number(food.calories || 0), 0); // Normalizo a number
   const totalProtein = Math.round(userFoods.reduce((sum, f) => sum + (f.protein || 0), 0));
   const totalCarbs = Math.round(userFoods.reduce((sum, f) => sum + (f.carbs || 0), 0));
@@ -111,8 +112,8 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
 
   
 
-  // Efecto: carga alimentos del día y hace prefetch semanal para KPIs
-  // Garantiza que la fecha seleccionada nunca se adelante a hoy (por cambios de TZ o manipulación)
+  // Carga alimentos del día y hace prefetch semanal
+  // Evita fechas futuras por zona horaria o manipulación
   useEffect(() => {
     const today = getTodayLocalDateKey();
     if (selectedDate > today) {
@@ -127,21 +128,21 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
         return;
       }
       try {
-        // Cálculo local (hora del dispositivo) de límites para prefetch semanal usando helpers
+        // Límites para prefetch semanal (hora local)
         const today = getTodayLocalDateKey();
         const weekAgoDate = new Date();
         weekAgoDate.setDate(weekAgoDate.getDate() - 7);
         const weekAgo = formatDateYYYYMMDD(weekAgoDate);
-        // Índice requerido: foodDatabase(userId ASC, date ASC, createdAt DESC)
+        // Índice: foodDatabase(userId ASC, date ASC, createdAt DESC)
         const normalizedSelected = normalizeToLocalDateKey(selectedDate);
         const foods = await userFoodService.getUserFoodsByDate(user.uid, normalizedSelected);
         setUserFoods(foods);
         setLoadError(null);
-        // Prefetch semanal silencioso (no usado directamente aquí)
+        // Prefetch semanal silencioso
         userFoodService.getNutritionStats(user.uid, weekAgo, today).catch(() => {});
       } catch (error) {
         console.error('Error loading foods:', error);
-        // Ojo: mantenemos última lista visible; notificamos con toast
+        // Mantiene la última lista visible; notifica con toast
         setLoadError('No se pudieron cargar los alimentos.');
         toast.error('No se pudieron cargar los alimentos.');
       }
@@ -149,8 +150,7 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     loadData();
   }, [user, selectedDate, toast]);
 
-  // Función: búsqueda local + USDA (si está configurado)
-  // Por qué: combinar base propia con resultados verificados del USDA.
+  // Búsqueda local + USDA (si está configurado)
   const handleSearch = useCallback(async (term?: string) => {
     const searchValue = (term ?? searchTerm).trim();
     if (!searchValue) {
@@ -176,9 +176,9 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     }
   }, [searchTerm]);
 
-  // Carrito: añadir, actualizar cantidad, eliminar y guardar en Firestore
+  // Carrito: añadir, actualizar cantidad, eliminar y guardar
   const handleAddToCart = (food: CommonFood, isFromDatabase: boolean, fdcId?: number) => {
-  // Generación de id estable para cada ítem del carrito
+    // Id estable para cada ítem del carrito
     const genId = () => {
       try {
         const id = (globalThis as unknown as { crypto?: { randomUUID?: () => string } })?.crypto?.randomUUID?.();
@@ -207,9 +207,9 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
     setCart((prev) => prev.filter((it) => it.id !== itemId));
   };
 
-  // Persiste todos los ítems del carrito para la fecha seleccionada
+  // Guarda todos los ítems del carrito para la fecha seleccionada
   const saveCart = async () => {
-    // Ojo: botón visible pero no ejecuta si no hay usuario o carrito vacío
+    // No hace nada si no hay usuario o el carrito está vacío
     if (!user || cart.length === 0) return;
     try {
       setIsProcessingCart(true);
@@ -256,10 +256,10 @@ export default function FoodTracker({ isDark }: FoodTrackerProps) {
       setSearchTerm('');
       setDatabaseFoods([]);
       setUsdaResults([]);
-      toast.success('Guardado'); // Feedback de éxito
+      toast.success('Guardado');
     } catch (err) {
       console.error('Error saving cart:', err);
-      // Ojo: mantenemos carrito; mostramos código de error si existe
+      // Mantiene el carrito; muestra el código de error si existe
       const code = (err as { code?: string })?.code || '';
       toast.error(`Error al guardar${code ? ` (${code})` : ''}. Intenta nuevamente.`);
     } finally {

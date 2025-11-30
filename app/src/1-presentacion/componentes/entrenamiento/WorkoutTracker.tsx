@@ -1,7 +1,6 @@
-// Propósito: iniciar/gestionar entrenamientos, registrar sets y ver historial y métricas.
-// Contexto: usa workoutService/workoutTemplateService (Firestore) y exerciseAPIService (catálogo ejercicios).
-//           Índices indirectos: workouts(userId+createdAt DESC), workouts(userId+completedAt DESC) en listados.
-// Nota: toasts se muestran sobre la UI (provider con z-index alto) para confirmaciones/errores.
+//  iniciar/gestionar entrenamientos, registrar sets y ver historial y métricas.
+
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Timestamp } from 'firebase/firestore';
 import {
@@ -73,7 +72,7 @@ type ToastType = 'success' | 'error' | 'info';
 
 interface RestTimerState { running: boolean; remaining: number; initial: number }
 
-// Adapted exercise shape for selection list in create modal
+
 interface SelectableExercise {
   id?: string;
   name: string;
@@ -110,10 +109,7 @@ const scoreMessage = (score: number) => {
   return 'Cada paso cuenta. ¡No te rindas!';
 };
 
-// Componente principal
-// Qué hace: orquesta estado de la sesión, timers, carga de plantillas/historial y acciones CRUD.
-// Por qué: centralizar lógica de entrenamiento en una vista única.
-// Ojo: requiere auth (user.uid) para todas las operaciones en Firestore.
+
 export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const { user } = useAuth();
 
@@ -128,6 +124,9 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [workoutStartEpoch, setWorkoutStartEpoch] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [workoutPaused, setWorkoutPaused] = useState(false);
+  // Edición manual de duración
+  const [isEditingDuration, setIsEditingDuration] = useState(false);
+  const [editMinutes, setEditMinutes] = useState<number | ''>('');
   const restTimers = useRef<Record<string, RestTimerState>>({});
   const restEditingRef = useRef<Record<string, boolean>>({});
   const [restEditState, setRestEditState] = useState<Record<string, { editing: boolean; m: string; s: string }>>({});
@@ -173,9 +172,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
 
   // Filtros e historial
   const [dateFilter, setDateFilter] = useState<string>('');
-  // const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set()); // expansión inline (reemplazado por modal)
-
-  // Toasts (usar host global vía ToastProvider)
+  
   const toast = useToast();
   const pushToast = useCallback((type: ToastType, message: string) => {
     if (type === 'success') return toast.success(message);
@@ -221,7 +218,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
 
   // Ticker de cronómetro principal: aumenta elapsedSeconds cada segundo mientras la sesión esté activa y no en pausa
   useEffect(() => {
-    if (!activeWorkout || workoutPaused || !workoutStartEpoch) {
+    if (!activeWorkout || workoutPaused || !workoutStartEpoch || isEditingDuration) {
       if (intervalRef.current) window.clearInterval(intervalRef.current);
       intervalRef.current = null;
       return;
@@ -234,7 +231,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
       if (intervalRef.current) window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [activeWorkout, workoutPaused, workoutStartEpoch]);
+  }, [activeWorkout, workoutPaused, workoutStartEpoch, isEditingDuration]);
 
   // Mantener referencia al workout activo para operaciones optimistas
   useEffect(() => { activeWorkoutRef.current = activeWorkout; }, [activeWorkout]);
@@ -584,13 +581,39 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     setElapsedSeconds(0);
   }, [activeWorkout]);
 
+  // Confirmar edición manual de duración
+  const handleConfirmEditDuration = useCallback(async () => {
+    const minutes = typeof editMinutes === 'number' ? editMinutes : Number(editMinutes);
+    if (Number.isNaN(minutes) || minutes < 0) {
+      pushToast('error', 'Duración inválida');
+      return;
+    }
+    const newSeconds = Math.floor(minutes * 60);
+    setElapsedSeconds(newSeconds);
+    setWorkoutStartEpoch(Math.floor(Date.now() / 1000) - newSeconds);
+    setIsEditingDuration(false);
+    setEditMinutes('');
+    try {
+      if (activeWorkout?.id) {
+        await workoutService.updateWorkout(activeWorkout.id, { duration: newSeconds });
+      }
+    } catch (e) {
+      console.error('Error actualizando duración', e);
+    }
+  }, [editMinutes, activeWorkout?.id, pushToast]);
+
+  const handleCancelEditDuration = useCallback(() => {
+    setIsEditingDuration(false);
+    setEditMinutes('');
+  }, []);
+
   // Finalización flujo
   const finishWorkout = useCallback(() => {
     if (!activeWorkout) return;
     setShowFinishModal(true);
   }, [activeWorkout]);
 
-  // Confirmación CP: finalización con campos incompletos
+  //  finalización con campos incompletos
   const hasIncomplete = useCallback((w: WorkoutSession) => (w.exercises || []).some(ex => {
     if (!ex.completed) return true;
     if (ex.setsDetail?.length) {
@@ -616,7 +639,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const doFinalize = useCallback(async () => {
     try {
       setPendingFinalize(true);
-      // En este flujo conservamos el diseño existente: abrimos el modal de energía
+      // En este flujo se conserva el diseño existente: abrimos el modal de energía
       // para completar postEnergy antes de finalizar realmente.
       setConfirmOpen(false);
       finishWorkout();
@@ -714,7 +737,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   }, [searchTerm]);
 
   // Carrito
-  // API items se agregan/quitan directamente desde la lista (toggle), no se usa ya un botón dedicado de "Agregar".
+  // API items se agregan/quitan directamente desde la lista 
 
 
   const removeSelectedByIndex = useCallback((idx: number) => {
@@ -1155,12 +1178,51 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                   <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${isDark ? 'bg-gray-900' : 'bg-gray-100'}`}>
                     <Clock className={`${isDark ? 'text-purple-400' : 'text-purple-600'}`} size={18} />
                     <span className="text-xl font-bold font-mono">{formatDuration(elapsedSeconds)}</span>
+                    {!isEditingDuration && (
+                      <button
+                        type="button"
+                        className={`ml-2 underline text-xs ${isDark ? 'text-purple-300 hover:text-purple-200' : 'text-purple-700 hover:text-purple-800'}`}
+                        onClick={() => {
+                          setIsEditingDuration(true);
+                          setEditMinutes(Math.floor(elapsedSeconds / 60));
+                        }}
+                      >Editar duración</button>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`} />
                     <span className={`${isDark ? 'text-gray-400' : 'text-gray-600'} text-xs font-medium`}>{isRunning ? 'En progreso' : 'Pausado'}</span>
                   </div>
                 </div>
+                {isEditingDuration && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <label htmlFor="edit-duration-min" className="text-xs">Duración (min)</label>
+                    <input
+                      id="edit-duration-min"
+                      name="edit-duration-min"
+                      type="number"
+                      min={0}
+                      value={editMinutes}
+                      onChange={(e) => {
+                        const val = e.currentTarget.value;
+                        if (val === '') { setEditMinutes(''); return; }
+                        const num = Number(val);
+                        if (!Number.isNaN(num)) setEditMinutes(num);
+                      }}
+                      className={`${isDark ? 'bg-gray-900 text-white border border-gray-700' : 'bg-white text-gray-900 border border-gray-300'} px-2 py-1 rounded w-24 text-sm`}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleConfirmEditDuration}
+                      className={`${isDark ? 'bg-green-600 hover:bg-green-700' : 'bg-green-500 hover:bg-green-600'} text-white px-2 py-1 rounded text-xs font-semibold`}
+                    >Guardar</button>
+                    <button
+                      type="button"
+                      onClick={handleCancelEditDuration}
+                      className={`${isDark ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-900'} px-2 py-1 rounded text-xs`}
+                    >Cancelar</button>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button

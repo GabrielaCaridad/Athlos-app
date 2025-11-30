@@ -1,12 +1,10 @@
-// Propósito: integrar con USDA FoodData Central, traduciendo consulta ES→EN y
-//            adaptando resultados al formato interno (nutrientes, porción, categorías).
-// Contexto: se usa desde componentes de búsqueda de alimentos para ampliar la base local.
-// Qué hace: traduce query, consulta API, mapea nutrientes claves y devuelve alimentos normalizados.
-// Ojo: requiere VITE_USDA_API_KEY. Aplica caché en memoria para reducir llamadas.
+/**
+ * Uso de USDA FoodData Central: traduce consultas y adapta resultados.
+ */
 const USDA_API_KEY = import.meta.env.VITE_USDA_API_KEY as string | undefined;
 const USDA_BASE_URL = 'https://api.nal.usda.gov/fdc/v1';
 
-// Qué hace: fetch con timeout y reintentos básicos para 5xx/429
+// Fetch con timeout y reintentos básicos (5xx/429)
 async function fetchWithRetry(url: string, opts: RequestInit = {}, attempts = 2, backoffMs = 600): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -22,7 +20,7 @@ async function fetchWithRetry(url: string, opts: RequestInit = {}, attempts = 2,
   }
 }
 
-// Interfaces
+// Tipos de datos
 export interface USDAFood {
   fdcId: number;
   description: string;
@@ -60,7 +58,7 @@ export interface AdaptedUSDAFood {
   isVerified: true;
 }
 
-// Mapeo de nutrientes USDA → IDs oficiales
+// Nutrientes clave USDA → IDs oficiales
 const NUTRIENT_MAP = {
   ENERGY: 1008,      // Calorías (kcal)
   PROTEIN: 1003,     // Proteína (g)
@@ -69,7 +67,7 @@ const NUTRIENT_MAP = {
   FIBER: 1079,       // Fibra dietética (g)
 };
 
-// Diccionario ES→EN para mejorar recall de la API
+// Diccionario ES→EN para mejorar recall
 const FOOD_TRANSLATIONS: Record<string, string> = {
   // Frutas
   'manzana': 'apple',
@@ -159,7 +157,7 @@ const REVERSE_TRANSLATIONS: Record<string, string> = Object.entries(FOOD_TRANSLA
   return acc;
 }, {} as Record<string, string>);
 
-// Qué hace: categorización heurística rápida por palabras clave
+// Categorización heurística por palabras clave
 function categorizeFood(description: string): AdaptedUSDAFood['category'] {
   const desc = description.toLowerCase();
   
@@ -206,7 +204,7 @@ function categorizeFood(description: string): AdaptedUSDAFood['category'] {
   return 'other';
 }
 
-// Qué hace: intenta traducir nombre inglés a español manteniendo capitalización
+// Traducir nombre EN→ES manteniendo capitalización
 function translateToSpanish(englishName: string): string {
   let translated = englishName.toLowerCase();
   
@@ -235,7 +233,7 @@ function translateToSpanish(englishName: string): string {
     .join(' ');
 }
 
-// Qué hace: reemplaza palabras españolas por su equivalente inglés antes del fetch
+// Traducir consulta ES→EN antes del fetch
 function translateToEnglish(spanishQuery: string): string {
   let translated = spanishQuery.toLowerCase();
   
@@ -247,13 +245,13 @@ function translateToEnglish(spanishQuery: string): string {
   return translated;
 }
 
-// Qué hace: obtiene valor numérico de nutriente por ID y redondea
+// Valor de nutriente por ID (redondeado)
 function getNutrientValue(nutrients: USDANutrient[], nutrientId: number): number {
   const nutrient = nutrients.find(n => n.nutrientId === nutrientId);
   return nutrient ? Math.round(nutrient.value * 10) / 10 : 0;
 }
 
-// Qué hace: transforma USDAFood → AdaptedUSDAFood (porción, macros, categoría, traducción)
+// Adaptar USDAFood → AdaptedUSDAFood (porción, macros, categoría, traducción)
 function adaptUSDAFood(usdaFood: USDAFood): AdaptedUSDAFood {
   const calories = getNutrientValue(usdaFood.foodNutrients, NUTRIENT_MAP.ENERGY);
   const protein = getNutrientValue(usdaFood.foodNutrients, NUTRIENT_MAP.PROTEIN);
@@ -294,7 +292,7 @@ function adaptUSDAFood(usdaFood: USDAFood): AdaptedUSDAFood {
   };
 }
 
-// Sección caché en memoria (Map) para búsquedas
+// Caché en memoria (Map) para búsquedas
 interface CacheItem {
   data: AdaptedUSDAFood[];
   timestamp: number;
@@ -303,7 +301,7 @@ interface CacheItem {
 const searchCache = new Map<string, CacheItem>();
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutos
 
-// Qué hace: devuelve resultados cache si vigentes (TTL 10 min)
+// Devolver resultados cache si vigentes (TTL 10 min)
 function getCachedSearch(query: string): AdaptedUSDAFood[] | null {
   const cached = searchCache.get(query.toLowerCase());
   if (!cached) return null;
@@ -326,7 +324,7 @@ function setCachedSearch(query: string, data: AdaptedUSDAFood[]) {
 // Servicio principal
 export const usdaFoodService = {
   /**
-   * Buscar alimentos en USDA (traduce automáticamente)
+   * Buscar alimentos en USDA (traducción automática)
    */
   async searchFoods(query: string, limit: number = 20): Promise<AdaptedUSDAFood[]> {
     if (!USDA_API_KEY) {

@@ -1,11 +1,7 @@
 /*
-  exerciseAPI
-  ------------------------------------------------------------
-  Integración con ExerciseDB (RapidAPI). Adapta los ejercicios al formato
-  interno, traduce equipamiento/músculos a español y estima dificultad,
-  categoría y calorías por minuto. Incluye caché en memoria y manejo de
-  errores específico por códigos HTTP.
-
+  Integración con ExerciseDB (RapidAPI): adapta ejercicios al formato interno,
+  traduce equipamiento/músculos a español, estima dificultad/categoría/kcal/min.
+  Incluye caché en memoria y manejo básico de errores HTTP.
 */
 
 // Configuración de la API
@@ -13,7 +9,7 @@ const RAPIDAPI_KEY = import.meta.env.VITE_RAPIDAPI_KEY as string | undefined;
 const RAPIDAPI_HOST = 'exercisedb.p.rapidapi.com';
 const BASE_URL = 'https://exercisedb.p.rapidapi.com';
 
-// Interfaces para los datos de ExerciseDB
+// Tipos de ExerciseDB
 export interface ExerciseDBExercise {
   bodyPart: string;
   equipment: string;
@@ -25,7 +21,7 @@ export interface ExerciseDBExercise {
   instructions: string[];
 }
 
-// Interfaz adaptada para el sistema
+// Tipo adaptado para el sistema
 export interface AdaptedExercise {
   id: string;
   name: string;
@@ -44,20 +40,20 @@ export interface AdaptedExercise {
   target: string;
 }
 
-// Interfaz para el cache
+// Cache en memoria (TTL corto)
 interface CacheItem {
   data: unknown;
   timestamp: number;
 }
 
-// Headers para las requests
+// Headers para peticiones
 const getHeaders = () => ({
   'X-RapidAPI-Key': RAPIDAPI_KEY ?? '',
   'X-RapidAPI-Host': RAPIDAPI_HOST,
   'Accept': 'application/json'
 });
 
-// Cache simple en memoria para evitar requests repetidas
+// Cache simple en memoria para evitar peticiones repetidas
 const cache = new Map<string, CacheItem>();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutos
 
@@ -84,7 +80,7 @@ const getCache = (key: string): unknown => {
   return cached.data;
 };
 
-// Mapeo de equipamiento de inglés a español
+// Equipamiento EN→ES
 const equipmentMapping: { [key: string]: string } = {
   'body weight': 'Peso corporal',
   'barbell': 'Barra',
@@ -107,7 +103,7 @@ const equipmentMapping: { [key: string]: string } = {
   'stepmill machine': 'Máquina de escalones'
 };
 
-// Mapeo de músculos de inglés a español
+// Músculos EN→ES
 const muscleMapping: { [key: string]: string } = {
   'abductors': 'Abductores',
   'abs': 'Abdominales',
@@ -131,7 +127,7 @@ const muscleMapping: { [key: string]: string } = {
   'lower back': 'Espalda baja'
 };
 
-// Función para determinar dificultad basada en el equipamiento y tipo de ejercicio
+// Dificultad según equipamiento y nombre
 const determineDifficulty = (equipment: string, name: string): 'beginner' | 'intermediate' | 'advanced' => {
   const nameLower = name.toLowerCase();
   
@@ -167,7 +163,7 @@ const determineDifficulty = (equipment: string, name: string): 'beginner' | 'int
   return 'intermediate';
 };
 
-// Función para determinar categoría basada en bodyPart
+// Categoría según bodyPart/target
 const determineCategory = (bodyPart: string, target: string): 'strength' | 'cardio' | 'flexibility' | 'functional' | 'core' => {
   if (bodyPart === 'cardio' || target === 'cardiovascular system') {
     return 'cardio';
@@ -181,7 +177,7 @@ const determineCategory = (bodyPart: string, target: string): 'strength' | 'card
   return 'strength';
 };
 
-// Función para estimar calorías por minuto basada en tipo de ejercicio
+// kcal/min estimadas
 const estimateCaloriesPerMinute = (equipment: string, category: string): number => {
   if (category === 'cardio') return 10;
   if (category === 'core') return 5;
@@ -194,7 +190,7 @@ const estimateCaloriesPerMinute = (equipment: string, category: string): number 
   return 6; 
 };
 
-// Función para convertir ejercicio de ExerciseDB a nuestro formato
+// Adaptar ejercicio al formato interno
 const adaptExercise = (exercise: ExerciseDBExercise): AdaptedExercise => {
   const category = determineCategory(exercise.bodyPart, exercise.target);
   const difficulty = determineDifficulty(exercise.equipment, exercise.name);
@@ -219,10 +215,10 @@ const adaptExercise = (exercise: ExerciseDBExercise): AdaptedExercise => {
   };
 };
 
-// Realiza peticiones HTTP con manejo de errores (429/401/403) y logging básico
+// Peticiones HTTP con manejo de 429/401/403 y logging básico
 const makeRequest = async (url: string): Promise<unknown> => {
   if (!RAPIDAPI_KEY) {
-    // Sin clave -> error explícito para guiar configuración
+    // Sin clave: error explícito para guiar configuración
     throw new Error('RAPIDAPI_KEY no configurada');
   }
   console.log('Making request to:', url);
@@ -287,7 +283,7 @@ export const exerciseAPIService = {
     if (cached) return cached as AdaptedExercise[];
 
     try {
-      // Endpoint correcto: /exercises/bodyPart/{bodyPart}
+      // Endpoint: /exercises/bodyPart/{bodyPart}
       const exercises = await makeRequest(
         `${BASE_URL}/exercises/bodyPart/${encodeURIComponent(bodyPart)}`
       ) as ExerciseDBExercise[];
@@ -334,7 +330,7 @@ export const exerciseAPIService = {
     if (cached) return cached as AdaptedExercise[];
 
     try {
-      // Endpoint correcto: /exercises/target/{target}
+      // Endpoint: /exercises/target/{target}
       const url = `${BASE_URL}/exercises/target/${encodeURIComponent(target)}`;
       const exercises = await makeRequest(url) as ExerciseDBExercise[];
       
@@ -349,7 +345,7 @@ export const exerciseAPIService = {
   },
 
   /**
-   * Buscar ejercicios por nombre 
+   * Buscar ejercicios por nombre
    */
   async searchExercises(searchTerm: string): Promise<AdaptedExercise[]> {
     if (!searchTerm.trim()) {
@@ -371,7 +367,7 @@ export const exerciseAPIService = {
       setCache(cacheKey, adaptedExercises);
       return adaptedExercises;
     } catch (error) {
-      // Si falla la búsqueda específica, fallback a búsqueda local
+      // Si falla, fallback a búsqueda local
       console.warn('Name search failed, trying local search:', error);
       try {
         const allExercises = await this.getAllExercises(100); // Obtener más ejercicios para buscar

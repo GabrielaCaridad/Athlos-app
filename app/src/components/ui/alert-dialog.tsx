@@ -2,9 +2,6 @@ import { createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode, MouseEvent } from 'react';
 
-// Minimal AlertDialog implementation compatible with shadcn/ui API used in this project.
-// Controlled via `open` prop and `onOpenChange`. Renders portal to document.body.
-
 type Ctx = { open: boolean; setOpen: (v: boolean) => void };
 const AlertDialogCtx = createContext<Ctx | undefined>(undefined);
 

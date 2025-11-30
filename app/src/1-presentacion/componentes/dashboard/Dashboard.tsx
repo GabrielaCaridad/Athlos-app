@@ -1,10 +1,7 @@
-// Propósito: mostrar progreso diario, resumen semanal y avisos (perfil, análisis proactivo).
-// Contexto: usa hooks (useUserData, usePersonalInsights) que requieren índices:
-//           foodDatabase(userId+date DESC) y workouts(userId+createdAt DESC).
-// Qué hace: deriva métricas locales (calorías hoy, entrenos últimos 7 días, energía media) en efectos.
-// Por qué: evitar cálculos pesados en render y mantener reactivo sin reconsultas manuales.
-// Ojo: normaliza 'hoy' con claves locales YYYY-MM-DD para coherencia en frontend/servicios.
-// Nota: timestamps Firestore pueden venir como Date o Timestamp; se unifican antes de comparar.
+/**
+ * Dashboard con progreso diario, resumen semanal y avisos.
+ * Deriva métricas locales y muestra insights recientes.
+ */
 import { useEffect, useState } from 'react';
 import { Utensils, Dumbbell, Zap, Brain, TrendingUp } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -40,7 +37,7 @@ export default function Dashboard({ isDark }: DashboardProps) {
   const [unreadProactive, setUnreadProactive] = useState<ProactiveMessage | null>(null);
   const [profileIncomplete, setProfileIncomplete] = useState(false);
 
-  const [calorieTarget, setCalorieTarget] = useState<number>(2200);
+  const [calorieTarget, setCalorieTarget] = useState<number | null>(null);
   const targetMeals = 3;
   const insightsCount = insights.length;
 
@@ -50,8 +47,10 @@ export default function Dashboard({ isDark }: DashboardProps) {
       if (!user?.uid) return;
       try {
         const p = await userService.getUserProfile(user.uid);
-        const savedTarget = typeof p?.dailyCalorieTarget === 'number' ? p.dailyCalorieTarget : undefined;
-        setCalorieTarget(savedTarget ?? 2200);
+        const savedTarget = (typeof p?.dailyCalorieTarget === 'number' && p.dailyCalorieTarget > 0)
+          ? p.dailyCalorieTarget
+          : null;
+        setCalorieTarget(savedTarget);
         console.log('🎯 [Config] Calorías objetivo del perfil:', savedTarget);
         console.log('🎯 [Config] Perfil completo:', {
           weight: p?.currentWeight,
@@ -257,11 +256,11 @@ export default function Dashboard({ isDark }: DashboardProps) {
           </h3>
           {/* Porcentaje respecto al objetivo calórico diario */}
           <span className={`text-2xl font-bold ${
-            totalCaloriesToday >= calorieTarget * 0.9 
+            calorieTarget && totalCaloriesToday >= calorieTarget * 0.9 
               ? 'text-green-500' 
               : 'text-yellow-500'
           }`}>
-            {Math.round((totalCaloriesToday / calorieTarget) * 100)}%
+            {calorieTarget ? Math.round((totalCaloriesToday / calorieTarget) * 100) : '--'}%
           </span>
         </div>
         
@@ -269,21 +268,29 @@ export default function Dashboard({ isDark }: DashboardProps) {
           <span className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
             {Number(totalCaloriesToday).toLocaleString()}
           </span>
-          <span className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-            / {calorieTarget.toLocaleString()} kcal
-          </span>
+          {calorieTarget ? (
+            <span className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+              / {calorieTarget.toLocaleString()} kcal
+            </span>
+          ) : null}
         </div>
         
         <div className={`w-full rounded-full h-3 ${isDark ? 'bg-gray-700' : 'bg-white/50'}`}>
           <div 
             className="h-3 rounded-full transition-all duration-500 bg-gradient-to-r from-green-500 to-emerald-500" 
-            style={{ width: `${Math.min((totalCaloriesToday / calorieTarget) * 100, 100)}%` }}
+            style={{ width: `${calorieTarget ? Math.min((totalCaloriesToday / calorieTarget) * 100, 100) : 0}%` }}
           />
         </div>
         
-  {totalCaloriesToday < calorieTarget * 0.5 && (
+  {calorieTarget && totalCaloriesToday < calorieTarget * 0.5 && (
           <p className={`text-xs mt-2 ${isDark ? 'text-yellow-400' : 'text-yellow-600'}`}>
             ⚠️ Recuerda registrar todas tus comidas del día
+          </p>
+        )}
+
+        {!calorieTarget && (
+          <p className={`text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+            Configura tu objetivo diario en la sección de Configuración para ver tu progreso.
           </p>
         )}
       </div>
