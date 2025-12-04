@@ -108,24 +108,25 @@ export default function Dashboard({ isDark }: DashboardProps) {
         used: calorieTarget
       });
 
-  // 2) Últimos 7 días: cantidad entrenos y energía media post-entreno
+  // 2) Últimos 7 días: cantidad entrenos y energía media post-entreno (solo finalizados)
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
-      const recentWorkouts = workouts.filter((w) => {
-        const src = (w as WorkoutLite).createdAt;
-        const dt: Date | undefined = src
-          ? (src instanceof Date
-              ? src
-              : typeof (src as FirestoreLikeTimestamp).toDate === 'function'
-                ? (src as FirestoreLikeTimestamp).toDate?.()
-                : undefined)
-          : undefined;
+      const recentWorkouts = (workouts as WorkoutLite[]).filter((w) => {
+        if ((w as any).isActive === true) return false;
+        const completed = (w as any).completedAt;
+        if (!completed) return false;
+        const created = (w as any).createdAt;
+        const dt: Date | undefined =
+          typeof completed?.toDate === 'function' ? completed.toDate() :
+          completed instanceof Date ? completed :
+          typeof created?.toDate === 'function' ? created.toDate() :
+          created instanceof Date ? created : undefined;
         return dt ? dt >= weekAgo : false;
-      }) as WorkoutLite[];
+      });
       setWorkoutsThisWeek(recentWorkouts.length);
 
       const energyLevels = recentWorkouts
-        .map(w => w.postEnergyLevel)
+        .map(w => (w as any).postEnergyLevel)
         .filter((e): e is number => e !== undefined && e !== null && e > 0);
       const avgEnergyLevel = energyLevels.length > 0
         ? energyLevels.reduce((s, e) => s + e, 0) / energyLevels.length

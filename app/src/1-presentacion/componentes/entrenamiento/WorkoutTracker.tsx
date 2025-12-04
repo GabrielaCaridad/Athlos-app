@@ -21,6 +21,7 @@ import {
   Save,
   Trash2,
   ListPlus,
+  Pencil,
   Dumbbell,
   Target,
   Zap,
@@ -81,6 +82,7 @@ interface SelectableExercise {
   defaultSets?: number;
   defaultReps?: number;
   restTimeSeconds?: number;
+  weightKg?: number;
 }
 
 // Detalle de serie usado en UI (extiende el de Firestore con atributos opcionales)
@@ -126,7 +128,8 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [workoutPaused, setWorkoutPaused] = useState(false);
   // Edición manual de duración
   const [isEditingDuration, setIsEditingDuration] = useState(false);
-  const [editMinutes, setEditMinutes] = useState<number | ''>('');
+  const [editDurationKey, setEditDurationKey] = useState(0);
+  const editMinutesRef = useRef<HTMLInputElement | null>(null);
   const restTimers = useRef<Record<string, RestTimerState>>({});
   const restEditingRef = useRef<Record<string, boolean>>({});
   const [restEditState, setRestEditState] = useState<Record<string, { editing: boolean; m: string; s: string }>>({});
@@ -166,12 +169,14 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
   const [manualAddNotice, setManualAddNotice] = useState<string | null>(null);
   const [saveAsTemplate, setSaveAsTemplate] = useState(true);
   const [routineName, setRoutineName] = useState('Nueva rutina');
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [createErrors, setCreateErrors] = useState<{ name?: string; exercises?: string }>({});
   // Buffers de inputs para permitir edición libre y confirmar en blur, conservando flechas
   const [inputBuffers, setInputBuffers] = useState<Record<string, { weight?: string; reps?: string }>>({});
 
   // Filtros e historial
   const [dateFilter, setDateFilter] = useState<string>('');
+  const isEditingTemplate = Boolean(editingTemplateId);
   
   const toast = useToast();
   const pushToast = useCallback((type: ToastType, message: string) => {
@@ -215,6 +220,17 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     })();
     return () => { mounted = false; };
   }, [user?.uid, pushToast]);
+
+  // Enfocar campo de duración al entrar en modo edición
+  useEffect(() => {
+    if (isEditingDuration && editMinutesRef.current) {
+      const input = editMinutesRef.current;
+      requestAnimationFrame(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+    }
+  }, [isEditingDuration]);
 
   // Ticker de cronómetro principal: aumenta elapsedSeconds cada segundo mientras la sesión esté activa y no en pausa
   useEffect(() => {
@@ -583,7 +599,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
 
   // Confirmar edición manual de duración
   const handleConfirmEditDuration = useCallback(async () => {
-    const minutes = typeof editMinutes === 'number' ? editMinutes : Number(editMinutes);
+    const minutes = Number(editMinutesRef.current?.value ?? '');
     if (Number.isNaN(minutes) || minutes < 0) {
       pushToast('error', 'Duración inválida');
       return;
@@ -592,7 +608,6 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     setElapsedSeconds(newSeconds);
     setWorkoutStartEpoch(Math.floor(Date.now() / 1000) - newSeconds);
     setIsEditingDuration(false);
-    setEditMinutes('');
     try {
       if (activeWorkout?.id) {
         await workoutService.updateWorkout(activeWorkout.id, { duration: newSeconds });
@@ -600,11 +615,10 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     } catch (e) {
       console.error('Error actualizando duración', e);
     }
-  }, [editMinutes, activeWorkout?.id, pushToast]);
+  }, [activeWorkout?.id, pushToast]);
 
   const handleCancelEditDuration = useCallback(() => {
     setIsEditingDuration(false);
-    setEditMinutes('');
   }, []);
 
   // Finalización flujo
@@ -744,6 +758,11 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
     setSelectedExercises(list => list.filter((_, i) => i !== idx));
   }, []);
 
+  const closeCreateModal = useCallback(() => {
+    setShowCreateModal(false);
+    setEditingTemplateId(null);
+  }, []);
+
   const estimatedSelectedCalories = useMemo(() => {
     // Estimación simple: 5 kcal por set, usando defaults si existen
     return selectedExercises.reduce((sum, ex) => sum + ((ex.defaultSets ?? 3) * 5), 0);
@@ -777,8 +796,17 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
         sets: ex.defaultSets ?? 3,
         reps: ex.defaultReps ?? 10,
         restTime: ex.restTimeSeconds ?? 60,
-        weightKg: 0,
+        weightKg: Number.isFinite(ex.weightKg) ? (ex.weightKg as number) : 0,
       }));
+      if (editingTemplateId) {
+        await workoutTemplateService.updateTemplate(editingTemplateId, { name: routineName || 'Mi rutina', exercises: tplExercises });
+        const ts = await workoutTemplateService.getUserTemplates(user.uid);
+        setTemplates(ts);
+        pushToast('success', 'Plantilla actualizada');
+        setShowCreateModal(false);
+        setEditingTemplateId(null);
+        return;
+      }
       if (saveAsTemplate) {
         await workoutTemplateService.createTemplate(user.uid, { name: routineName || 'Mi rutina', exercises: tplExercises });
         pushToast('success', 'Plantilla guardada');
@@ -803,7 +831,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
       console.error('Save cart error', e);
       pushToast('error', 'No se pudo guardar/iniciar la rutina');
     }
-  }, [user?.uid, selectedExercises, saveAsTemplate, routineName, openPreEnergyModal, pushToast]);
+  }, [user?.uid, selectedExercises, saveAsTemplate, routineName, openPreEnergyModal, pushToast, editingTemplateId]);
 
   // UI subcomponentes (internos) para mantener el archivo manejable
   const RestTimerBadge: React.FC<{ exerciseId: string; defaultSeconds?: number }>
@@ -1184,7 +1212,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                         className={`ml-2 underline text-xs ${isDark ? 'text-purple-300 hover:text-purple-200' : 'text-purple-700 hover:text-purple-800'}`}
                         onClick={() => {
                           setIsEditingDuration(true);
-                          setEditMinutes(Math.floor(elapsedSeconds / 60));
+                          setEditDurationKey(k => k + 1);
                         }}
                       >Editar duración</button>
                     )}
@@ -1200,16 +1228,18 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                     <input
                       id="edit-duration-min"
                       name="edit-duration-min"
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       min={0}
-                      value={editMinutes}
+                      defaultValue={String(Math.floor(elapsedSeconds / 60))}
+                      key={editDurationKey}
                       onChange={(e) => {
                         const val = e.currentTarget.value;
-                        if (val === '') { setEditMinutes(''); return; }
-                        const num = Number(val);
-                        if (!Number.isNaN(num)) setEditMinutes(num);
+                        if (/^\\d*$/.test(val)) setEditMinutes(val);
                       }}
                       className={`${isDark ? 'bg-gray-900 text-white border border-gray-700' : 'bg-white text-gray-900 border border-gray-300'} px-2 py-1 rounded w-24 text-sm`}
+                      ref={editMinutesRef}
+                      autoFocus
                     />
                     <button
                       type="button"
@@ -1320,7 +1350,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Rutinas</h3>
-          <button onClick={() => { setShowCreateModal(true); loadPopular(); }} className={`${isDark ? 'bg-gray-900 hover:bg-gray-800 text-white' : 'bg-white hover:bg-gray-100 text-gray-900'} border ${isDark ? 'border-gray-700' : 'border-gray-300'} px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2`}>
+          <button onClick={() => { setEditingTemplateId(null); setShowCreateModal(true); loadPopular(); }} className={`${isDark ? 'bg-gray-900 hover:bg-gray-800 text-white' : 'bg-white hover:bg-gray-100 text-gray-900'} border ${isDark ? 'border-gray-700' : 'border-gray-300'} px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2`}>
             <ListPlus size={16} /> Crear rutina
           </button>
         </div>
@@ -1366,6 +1396,28 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                     >
                       <span className="flex items-center gap-2"><Play size={14} /> Iniciar</span>
                     </button>
+                    {tpl.id && (
+                      <button
+                        onClick={() => {
+                          setEditingTemplateId(tpl.id || null);
+                          setRoutineName(tpl.name || 'Mi rutina');
+                          setSelectedExercises(tpl.exercises.map((e, idx) => ({
+                            id: e.id || `${tpl.id}-${idx}`,
+                            name: e.name,
+                            defaultSets: e.sets,
+                            defaultReps: e.reps,
+                            restTimeSeconds: e.restTime ?? 60,
+                            weightKg: typeof e.weightKg === 'number' ? e.weightKg : (lastWeightByExercise.get(e.name) ?? 0),
+                          })));
+                          setSaveAsTemplate(true);
+                          loadPopular();
+                          setShowCreateModal(true);
+                        }}
+                        className={`${isDark ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'} px-3 py-3 rounded-lg text-sm transition-colors flex items-center gap-2`}
+                      >
+                        <Pencil size={14} /> Editar
+                      </button>
+                    )}
                     {tpl.id && (
                       <button
                         onClick={async () => {
@@ -1448,14 +1500,14 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
       {/* Modal crear rutina*/}
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowCreateModal(false)} />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeCreateModal} />
   <div className={`${isDark ? 'bg-gray-900 border border-gray-800 shadow-dark-neumorph' : 'bg-white border border-gray-200 shadow-neumorph'} w-full max-w-5xl rounded-3xl p-6 md:p-8 relative`}>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <ListPlus />
-                <div className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Crear rutina</div>
+                <div className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{isEditingTemplate ? 'Editar rutina' : 'Crear rutina'}</div>
               </div>
-              <button onClick={() => setShowCreateModal(false)} className={`${isDark ? 'bg-gray-800 hover:bg-gray-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-900'} px-3 py-2 rounded-xl transition-transform hover:scale-105 active:scale-95`}>
+              <button onClick={closeCreateModal} className={`${isDark ? 'bg-gray-800 hover:bg-gray-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-900'} px-3 py-2 rounded-xl transition-transform hover:scale-105 active:scale-95`}>
                 <X />
               </button>
             </div>
@@ -1488,6 +1540,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                         <button
                           key={exercise.id || exercise.name}
                           onClick={() => {
+                            const lastWeight = lastWeightByExercise.get(exercise.name);
                             const adapted: SelectableExercise = {
                               id: exercise.id,
                               name: exercise.name,
@@ -1496,6 +1549,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                               defaultSets: exercise.defaultSets ?? 3,
                               defaultReps: exercise.defaultReps ?? 10,
                               restTimeSeconds: exercise.restTimeSeconds ?? 60,
+                              weightKg: typeof lastWeight === 'number' ? lastWeight : 0,
                             };
                             setSelectedExercises(list => {
                               const exists = list.find(ex => (ex.id && adapted.id && ex.id === adapted.id) || (!ex.id && ex.name === adapted.name));
@@ -1548,7 +1602,7 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                     <button
                       onClick={() => {
                         if (!manualExerciseName.trim()) return;
-                        const item: SelectableExercise = { name: manualExerciseName.trim(), defaultSets: 3, defaultReps: 10, restTimeSeconds: 60 };
+                        const item: SelectableExercise = { name: manualExerciseName.trim(), defaultSets: 3, defaultReps: 10, restTimeSeconds: 60, weightKg: 0 };
                         setSelectedExercises(list => [...list, item]);
                         setManualExerciseName('');
                         setManualAddNotice('Ejercicio agregado');
@@ -1576,10 +1630,34 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                   ) : (
                     <div className={`${isDark ? 'bg-gray-800' : 'bg-gray-100'} rounded-lg p-3 max-h-64 overflow-y-auto space-y-2`}>
                       {selectedExercises.map((ex, idx) => (
-                        <div key={ex.id || idx} className={`flex items-center justify-between p-2 rounded ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+                        <div key={ex.id || idx} className={`flex items-center justify-between gap-3 p-2 rounded ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
                           <div className="flex-1">
                             <div className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{ex.name}</div>
                             <div className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{ex.equipment} • {ex.difficulty}</div>
+                            <div className="mt-1 flex items-center gap-2 flex-wrap">
+                              <label htmlFor={`weight-${idx}`} className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Peso objetivo (kg):</label>
+                              <input
+                                id={`weight-${idx}`}
+                                type="number"
+                                step="0.5"
+                                inputMode="decimal"
+                                className={`w-24 px-2 py-1 rounded border text-sm ${isDark ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-300 text-gray-800'}`}
+                                value={ex.weightKg ?? ''}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  setSelectedExercises(list => {
+                                    const next = [...list];
+                                    const cur = next[idx];
+                                    next[idx] = { ...cur, weightKg: Number.isFinite(val) ? val : undefined };
+                                    return next;
+                                  });
+                                }}
+                                placeholder="0"
+                              />
+                              {typeof lastWeightByExercise.get(ex.name) === 'number' && (
+                                <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Último: {lastWeightByExercise.get(ex.name)}kg</span>
+                              )}
+                            </div>
                           </div>
                           <button onClick={() => removeSelectedByIndex(idx)} className={`${isDark ? 'text-gray-400 hover:text-red-400 hover:bg-red-900/20' : 'text-gray-500 hover:text-red-600 hover:bg-red-50'} p-1.5 rounded transition-colors`} title="Quitar ejercicio">
                             <Trash2 size={16} />
@@ -1593,11 +1671,13 @@ export default function WorkoutTracker({ isDark }: WorkoutTrackerProps) {
                 <div className="mt-3 flex items-center justify-between">
                   <div className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Calorías estimadas: {Math.round(estimatedSelectedCalories)} kcal</div>
                   <div className="flex items-center gap-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input id="save-as-template" name="save-as-template" type="checkbox" checked={saveAsTemplate} onChange={e => setSaveAsTemplate(e.target.checked)} /> Guardar como plantilla
-                    </label>
+                    {!isEditingTemplate && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input id="save-as-template" name="save-as-template" type="checkbox" checked={saveAsTemplate} onChange={e => setSaveAsTemplate(e.target.checked)} /> Guardar como plantilla
+                      </label>
+                    )}
                     <button onClick={saveCartAll} className={`${isDark ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-500 hover:bg-purple-600'} text-white px-2 py-2 rounded-lg text-xs font-semibold flex items-center gap-1`}>
-                      <Save size={14} /> Guardar todo
+                      <Save size={14} /> {isEditingTemplate ? 'Guardar cambios' : 'Guardar todo'}
                     </button>
                   </div>
                 </div>

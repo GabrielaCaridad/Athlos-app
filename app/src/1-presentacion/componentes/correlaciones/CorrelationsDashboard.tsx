@@ -358,31 +358,31 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
   }, [rawFoods, rawWorkouts, startDate, endDate]);
 
   // Dispersión kcal vs performance (días con entreno)
-    const scatterData = useMemo<ScatterPoint[]>(() => dailyPoints.filter(d => (d.performance ?? 0) > 0).map(d => ({
-      date: d.date,
-      calories: d.kcal,
-      performance: d.performance!,
-      category: d.kcal < 1800 ? 'bajo' as const : d.kcal <= 2200 ? 'optimo' as const : 'exceso' as const,
-      energy: d.energy,
-      durationSec: d.durationSec
-    })), [dailyPoints]);
-
-    // Correlaciones adaptativas (usadas en UI e insights contextuales)
-    const caloriesEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
-      dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.kcal),
-      dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.energy as number),
-      `${windowDays}d`
-    ), [dailyPoints, windowDays]);
-    const carbsPctPerfCorr = useMemo(() => computeAdaptiveCorrelation(
-      dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.carbsPct as number),
-      dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.performance as number),
-      `${windowDays}d`
-    ), [dailyPoints, windowDays]);
-    const durationEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
-      dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.durationSec as number),
-      dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.energy as number),
-      `${windowDays}d`
-    ), [dailyPoints, windowDays]);
+  const scatterData = useMemo<ScatterPoint[]>(() => dailyPoints.filter(d => (d.performance ?? 0) > 0).map(d => ({
+    date: d.date,
+    calories: d.kcal,
+    performance: d.performance!,
+    category: d.kcal < 1800 ? 'bajo' as const : d.kcal <= 2200 ? 'optimo' as const : 'exceso' as const,
+    energy: d.energy,
+    durationSec: d.durationSec
+  })), [dailyPoints]);
+  
+  // Correlaciones adaptativas (usadas en UI e insights contextuales)
+  const caloriesEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
+    dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.kcal),
+    dailyPoints.filter(d=> Number.isFinite(d.energy) && d.kcal>0).map(d=>d.energy as number),
+    `${windowDays}d`
+  ), [dailyPoints, windowDays]);
+  const carbsPctPerfCorr = useMemo(() => computeAdaptiveCorrelation(
+    dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.carbsPct as number),
+    dailyPoints.filter(d=> Number.isFinite(d.performance) && d.performance!>0 && Number.isFinite(d.carbsPct)).map(d=>d.performance as number),
+    `${windowDays}d`
+  ), [dailyPoints, windowDays]);
+  const durationEnergyCorr = useMemo(() => computeAdaptiveCorrelation(
+    dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.durationSec as number),
+    dailyPoints.filter(d=> Number.isFinite(d.energy) && (d.durationSec||0)>0).map(d=>d.energy as number),
+    `${windowDays}d`
+  ), [dailyPoints, windowDays]);
   // Correlaciones
   const { r: rCalPerf, n: nCalPerf } = useMemo(() => pearson(scatterData.map(d => d.calories), scatterData.map(d => d.performance)), [scatterData]);
 
@@ -533,6 +533,7 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
     );
   };
 
+
   if (loading) {
     return (
       <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
@@ -557,8 +558,8 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
             title="¿Qué son estos insights?"
             description="Patrones detectados automáticamente a partir de tus datos reales (comidas + entrenos)."
             bullets={[
-              'Pattern: relación consistente en tus hábitos',
-              'Recommendation: ajuste accionable para mejorar',
+              'Patrón: relación consistente en tus hábitos',
+              'Recomendación: ajuste accionable para mejorar',
               'La evidencia incluye promedios y rangos de tus días'
             ]}
           />
@@ -650,7 +651,8 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
         </section>
       )}
 
-      {/* Gráfico: Macros por día (incluye días sin entreno) */}
+
+      {/* Grafico: Macros por dia (incluye dias sin entreno) */}
       {dailyPoints.length > 0 && (
         <section>
           <div className={`p-6 rounded-2xl ${isDark ? 'bg-gray-800 shadow-dark-neumorph' : 'bg-white shadow-neumorph'}`}>
@@ -696,13 +698,17 @@ export default function CorrelationsDashboard({ isDark }: CorrelationsDashboardP
               <InfoTooltip
                 isDark={isDark}
                 title="¿Cómo leer esto?"
-                description="Variación de tus calorías entre días. Mientras más baja, más constante es tu ingesta."
+                description="Vista rápida de tus métricas clave para este rango de fechas."
+                bullets={[
+                  'Performance: score 0-100 de tus entrenos en este rango',
+                  'Se calcula con completitud (40%), intensidad vs objetivo (30%) y cambio de energía pre/post (30%)',
+                  'Intensidad vs objetivo: qué tan cerca estuvo el peso trabajado del peso objetivo de cada ejercicio completado'
+                ]}
               />
             </div>
             <ul className={isDark ? 'text-gray-300 space-y-1' : 'text-gray-700 space-y-1'}>
               <li>• Días en zona óptima: {dailyPoints.filter(d => d.kcal >= 1800 && d.kcal <= 2200).length}</li>
               <li>• Performance promedio (sólo días con entreno): {scatterData.length>0 ? Math.round(scatterData.reduce((s,d)=>s+d.performance,0)/scatterData.length) : 0}%</li>
-              <li>• Consistencia calórica: {(() => { const arr = dailyPoints.map(d=>d.kcal); const avg = arr.reduce((s,v)=>s+v,0)/(arr.length||1); const std = Math.sqrt(arr.reduce((s,v)=>s+(v-avg)**2,0)/(arr.length||1)); return avg>0 ? (std/avg*100).toFixed(1) : '0.0'; })()}%</li>
               {(() => {
                 const insufficient = nCalPerf < 5 || caloriesEnergyCorr.n < 5 || carbsPctPerfCorr.n < 5 || durationEnergyCorr.n < 5;
                 if (insufficient) {

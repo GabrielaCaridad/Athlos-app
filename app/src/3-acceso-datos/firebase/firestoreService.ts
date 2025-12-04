@@ -529,6 +529,8 @@ export const workoutService = {
     try {
       const docRef = await addDoc(collection(db, 'workouts'), {
         ...workoutData,
+        // Asegurar flag inicial
+        isActive: workoutData.isActive ?? true,
         userId,
         createdAt: Timestamp.now()
       });
@@ -730,7 +732,9 @@ export const workoutService = {
       endOfWeek.setDate(startOfWeek.getDate() + 7);
 
       const workouts = all.filter(w => {
-        if (w.isActive) return false;
+        // Contar solo entrenos finalizados
+        if (w.isActive === true) return false;
+        if (!w.completedAt) return false;
         const d = this.getEffectiveDate(w);
         if (!d) return false;
         return d >= startOfWeek && d < endOfWeek;
